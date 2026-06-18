@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Certificate Generator</title>
+</head>
+<body>
+
+<h2>Certificate Generator</h2>
+
+<form action="/generate-certificates"
+      method="post"
+      enctype="multipart/form-data">
+
+    <input type="file"
+           name="file"
+           accept=".xlsx,.xls"
+           required>
+
+    <br><br>
+
+    <button type="submit">
+        Generate Certificates
+    </button>
+
+</form>
+
+</body>
+</html>
