@@ -114,15 +114,19 @@ HTML = """
     </div>
     <div id="file-name"></div>
 
-    <div class="checkbox-group">
-      <label>
-        <input type="checkbox" name="only_olive_train" id="only_olive_train" checked>
-        Only generate certificates for <strong>O-LIVE TRAIN</strong> students (17/06 - 02/07)
+    <div class="checkbox-group" id="sheet-picker" style="display:none;">
+      <label for="sheet-select" style="display:block; margin-bottom:8px; cursor:default;">
+        Generate certificates for which group / sheet?
       </label>
+      <select name="sheet_name" id="sheet-select" disabled
+              style="width:100%; padding:8px; border-radius:6px; border:1px solid #BDD7EE; font-size:13px;">
+        <option value="">Loading sheets…</option>
+      </select>
     </div>
 
     <div class="info-box">
       <strong>Expected Excel format:</strong><br>
+      Pick the file and choose which group/cohort sheet to generate from the dropdown above.
       Each student sheet can have its header row anywhere near the top (the app auto-detects it),
       and should include columns like:<br>
       <code>Name · Surname · Age · Sector · Sector Database · Experience · Languages · Alergies ·
@@ -149,21 +153,53 @@ HTML = """
 </div>
 
 <script>
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
-const fileName  = document.getElementById('file-name');
-const submitBtn = document.getElementById('submit-btn');
-const form      = document.getElementById('upload-form');
-const progress  = document.getElementById('progress');
-const statusEl  = document.getElementById('status');
-const resultEl  = document.getElementById('result');
-const errorBox  = document.getElementById('error-box');
-const dlLink    = document.getElementById('dl-link');
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const fileName   = document.getElementById('file-name');
+const sheetPicker= document.getElementById('sheet-picker');
+const sheetSelect= document.getElementById('sheet-select');
+const submitBtn  = document.getElementById('submit-btn');
+const form       = document.getElementById('upload-form');
+const progress   = document.getElementById('progress');
+const statusEl   = document.getElementById('status');
+const resultEl   = document.getElementById('result');
+const errorBox   = document.getElementById('error-box');
+const dlLink     = document.getElementById('dl-link');
+
+async function loadSheets(file) {
+  sheetPicker.style.display = 'block';
+  sheetSelect.disabled = true;
+  sheetSelect.innerHTML = '<option value="">Loading sheets…</option>';
+  submitBtn.disabled = true;
+  errorBox.style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/list-sheets', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not read sheets');
+    if (!data.sheets || data.sheets.length === 0) {
+      throw new Error('No group sheets found in this file.');
+    }
+    sheetSelect.innerHTML = '<option value="">— Select a group —</option>' +
+      data.sheets.map(s => `<option value="${s.replace(/"/g, '&quot;')}">${s}</option>`).join('');
+    sheetSelect.disabled = false;
+  } catch (err) {
+    sheetSelect.innerHTML = '<option value="">— could not load —</option>';
+    errorBox.textContent = '❌ ' + err.message;
+    errorBox.style.display = 'block';
+  }
+}
+
+sheetSelect.addEventListener('change', () => {
+  submitBtn.disabled = !(fileInput.files[0] && sheetSelect.value);
+});
 
 fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) {
     fileName.textContent = '📄 ' + fileInput.files[0].name;
-    submitBtn.disabled = false;
+    loadSheets(fileInput.files[0]);
   }
 });
 
@@ -175,7 +211,11 @@ fileInput.addEventListener('change', () => {
 }));
 dropZone.addEventListener('drop', ev => {
   const f = ev.dataTransfer.files[0];
-  if (f) { fileInput.files = ev.dataTransfer.files; fileName.textContent = '📄 ' + f.name; submitBtn.disabled = false; }
+  if (f) {
+    fileInput.files = ev.dataTransfer.files;
+    fileName.textContent = '📄 ' + f.name;
+    loadSheets(f);
+  }
 });
 
 form.addEventListener('submit', async e => {
@@ -410,9 +450,57 @@ def extract_student_data(df):
     return students
 
 
+# Sheet names that are never cohorts of students - reused by both the
+# /list-sheets route (so the dropdown doesn't show them) and
+# /generate-certificates (so they're never scanned for students).
+NON_COHORT_SHEET_NAMES = {
+    'task database', 'company database', 'task database - olivetrain',
+}
+
+
+def is_cohort_sheet(sheet_name):
+    """True if a sheet looks like a student/group sheet rather than an
+    admin sheet (Task Database, Company Database, Template, etc.)."""
+    name_lower = sheet_name.strip().lower()
+    if name_lower in NON_COHORT_SHEET_NAMES:
+        return False
+    if name_lower.startswith('template'):
+        return False
+    return True
+
+
 @app.route("/")
 def home():
     return render_template_string(HTML)
+
+
+@app.route("/list-sheets", methods=["POST"])
+def list_sheets():
+    """Return the cohort/group sheet names in an uploaded workbook so the
+    frontend can offer them in a dropdown, instead of hardcoding one
+    specific group name like 'O-LIVE TRAIN'."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+
+    excel_file = request.files["file"]
+    if excel_file.filename == "":
+        return jsonify({"error": "No file selected."}), 400
+
+    excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
+    excel_file.save(excel_path)
+
+    try:
+        xl = pd.ExcelFile(excel_path)
+        sheets = [s for s in xl.sheet_names if is_cohort_sheet(s)]
+    except Exception as e:
+        return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+    finally:
+        try:
+            os.remove(excel_path)
+        except Exception:
+            pass
+
+    return jsonify({"sheets": sheets})
 
 
 @app.route("/generate-certificates", methods=["POST"])
@@ -424,7 +512,9 @@ def generate_certificates():
     if excel_file.filename == "":
         return jsonify({"error": "No file selected."}), 400
 
-    only_olive_train = request.form.get('only_olive_train') == 'on'
+    sheet_name_filter = request.form.get('sheet_name', '').strip()
+    if not sheet_name_filter:
+        return jsonify({"error": "Please choose a group/sheet to generate certificates for."}), 400
 
     excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
     excel_file.save(excel_path)
@@ -434,13 +524,9 @@ def generate_certificates():
         all_students = []
 
         for sheet_name in xl.sheet_names:
-            if only_olive_train:
-                if sheet_name.lower() != "o-live train - 17.06".lower():
-                    continue
-
-            if sheet_name.lower() in ['task database', 'company database', 'template', 'task database - olivetrain']:
+            if sheet_name.lower() != sheet_name_filter.lower():
                 continue
-            if sheet_name.lower().startswith('template'):
+            if not is_cohort_sheet(sheet_name):
                 continue
 
             try:
@@ -481,10 +567,7 @@ def generate_certificates():
                 continue
 
         if not all_students:
-            if only_olive_train:
-                return jsonify({"error": "No O-LIVE TRAIN students found. Make sure the sheet is named exactly 'O-LIVE TRAIN - 17.06'."}), 400
-            else:
-                return jsonify({"error": "No student data found in any sheet. Make sure sheets have columns like 'Name' or 'Surname'."}), 400
+            return jsonify({"error": f"No student data found in sheet '{sheet_name_filter}'. Make sure it has columns like 'Name' or 'Surname'."}), 400
 
         sector_map = {}
         try:
@@ -605,8 +688,7 @@ def generate_certificates():
         error_msg = "No certificates generated."
         if errors:
             error_msg += " Errors: " + "; ".join(errors[:3])
-        if only_olive_train:
-            error_msg += " No O-LIVE TRAIN students with valid data found."
+        error_msg += f" No students with valid data found in '{sheet_name_filter}'."
         return jsonify({"error": error_msg}), 400
 
     zip_buffer = io.BytesIO()
