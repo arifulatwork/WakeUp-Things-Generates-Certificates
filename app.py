@@ -12,10 +12,13 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 OUTPUT_FOLDER = os.path.join(os.path.dirname(__file__), "generated")
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "certificate_template.docx")
+TEMPLATES_FOLDER = os.path.join(os.path.dirname(__file__), "templates")
+# Kept for backward compatibility with any code/notes referencing the old single-template path.
+TEMPLATE_PATH = os.path.join(TEMPLATES_FOLDER, "certificate_template.docx")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(TEMPLATES_FOLDER, exist_ok=True)
 
 HTML = """
 <!DOCTYPE html>
@@ -23,46 +26,77 @@ HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Certificate Generator</title>
+<title>Wake Up Projects · Certificate Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --navy: #16213E;
+    --navy-deep: #0E1530;
+    --amber: #FF8C42;
+    --gold: #FFC857;
+    --cream: #FBF6EF;
+    --ink: #20232B;
+    --muted: #6E7480;
+    --line: #EAE3D8;
+  }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, sans-serif; background: #f0f4f8; min-height: 100vh;
-         display: flex; align-items: center; justify-content: center; padding: 24px; }
-  .card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.1);
-          padding: 40px; width: 100%; max-width: 620px; }
-  .logo { text-align: center; margin-bottom: 28px; }
-  .logo svg { width: 56px; height: 56px; }
-  h1 { font-size: 22px; color: #1F4E79; text-align: center; margin-bottom: 6px; }
-  p.sub { font-size: 13px; color: #666; text-align: center; margin-bottom: 28px; }
+  body { font-family: 'Inter', Arial, sans-serif; background: var(--cream); min-height: 100vh;
+         display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--ink); }
 
-  .drop-zone { border: 2px dashed #BDD7EE; border-radius: 8px; padding: 32px 16px;
-               text-align: center; cursor: pointer; transition: all .2s; background: #f7fbff;
+  .card { background: #fff; border-radius: 18px; box-shadow: 0 12px 40px rgba(22,33,62,.12);
+          width: 100%; max-width: 620px; overflow: hidden;
+          animation: rise .5s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .banner { position: relative; padding: 36px 40px 30px; text-align: center; overflow: hidden;
+            background: linear-gradient(180deg, var(--navy-deep) 0%, var(--navy) 55%, var(--amber) 130%); }
+  .banner::before { content: ""; position: absolute; left: 50%; bottom: -60px; width: 220px; height: 220px;
+                     transform: translateX(-50%); border-radius: 50%;
+                     background: radial-gradient(circle, var(--gold) 0%, rgba(255,200,87,0) 70%); opacity: .55; }
+  .banner .logo-wrap { position: relative; z-index: 1; width: 60px; height: 60px; margin: 0 auto 14px;
+                        border-radius: 50%; background: #fff; display: flex; align-items: center;
+                        justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,.25); overflow: hidden; }
+  .banner .logo-wrap img { width: 100%; height: 100%; object-fit: cover; }
+  .banner .logo-wrap .fallback { font-family: 'Fraunces', serif; font-weight: 700; color: var(--navy); font-size: 20px; }
+  .banner h1 { position: relative; z-index: 1; font-family: 'Fraunces', serif; font-weight: 700;
+               font-size: 26px; letter-spacing: .3px; color: #fff; margin-bottom: 4px; }
+  .banner p.sub { position: relative; z-index: 1; font-size: 12.5px; letter-spacing: 1.5px;
+                  text-transform: uppercase; color: rgba(255,255,255,.78); }
+
+  .body-pad { padding: 32px 40px 36px; }
+
+  .drop-zone { border: 2px dashed #E3B27E; border-radius: 10px; padding: 32px 16px;
+               text-align: center; cursor: pointer; transition: all .2s; background: #FFF7EE;
                position: relative; }
-  .drop-zone.drag-over { border-color: #1F4E79; background: #EBF5FB; }
+  .drop-zone.drag-over { border-color: var(--amber); background: #FFEEDB; }
   .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-  .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
+  .drop-zone .icon { font-size: 34px; margin-bottom: 8px; }
   .drop-zone p { font-size: 14px; color: #555; }
   .drop-zone .hint { font-size: 12px; color: #999; margin-top: 4px; }
-  #file-name { margin-top: 10px; font-size: 13px; color: #1F4E79; font-weight: bold;
+  #file-name { margin-top: 10px; font-size: 13px; color: var(--navy); font-weight: 600;
                min-height: 18px; text-align: center; }
 
-  .info-box { background: #EBF5FB; border-left: 4px solid #1F4E79; border-radius: 4px;
-              padding: 12px 14px; margin: 20px 0; font-size: 12.5px; color: #444; line-height: 1.6; }
-  .info-box strong { color: #1F4E79; }
+  .info-box { background: #FFF7EE; border-left: 4px solid var(--amber); border-radius: 6px;
+              padding: 12px 14px; margin: 20px 0; font-size: 12.5px; color: #5b5142; line-height: 1.6; }
+  .info-box strong { color: var(--navy); }
 
-  .checkbox-group { margin: 16px 0; padding: 12px 14px; background: #f7fbff; border-radius: 6px; border: 1px solid #d0e0f0; }
+  .checkbox-group { margin: 16px 0; padding: 14px 16px; background: #FFF7EE; border-radius: 8px; border: 1px solid #F0D9BC; }
   .checkbox-group label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #333; cursor: pointer; }
-  .checkbox-group input[type=checkbox] { width: 16px; height: 16px; accent-color: #1F4E79; }
+  .checkbox-group input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--navy); }
 
-  button[type=submit] { width: 100%; padding: 14px; background: #1F4E79; color: #fff;
-                        border: none; border-radius: 8px; font-size: 15px; font-weight: bold;
-                        cursor: pointer; transition: background .2s; margin-top: 8px; }
-  button[type=submit]:hover { background: #16365a; }
-  button[type=submit]:disabled { background: #aaa; cursor: not-allowed; }
+  button[type=submit] { width: 100%; padding: 14px; background: linear-gradient(135deg, var(--amber), var(--gold));
+                        color: var(--navy-deep); border: none; border-radius: 10px; font-size: 15px;
+                        font-weight: 700; font-family: 'Inter', sans-serif; cursor: pointer;
+                        transition: filter .2s, transform .1s; margin-top: 8px; }
+  button[type=submit]:hover:not(:disabled) { filter: brightness(1.06); }
+  button[type=submit]:active:not(:disabled) { transform: translateY(1px); }
+  button[type=submit]:disabled { background: #ddd; color: #999; cursor: not-allowed; }
 
   #progress { display: none; margin-top: 16px; }
-  .bar-wrap { background: #e0e0e0; border-radius: 99px; height: 8px; overflow: hidden; }
-  .bar { height: 100%; background: #1F4E79; border-radius: 99px;
+  .bar-wrap { background: #eee; border-radius: 99px; height: 8px; overflow: hidden; }
+  .bar { height: 100%; background: linear-gradient(90deg, var(--amber), var(--gold)); border-radius: 99px;
          animation: indeterminate 1.5s infinite ease-in-out; }
   @keyframes indeterminate {
     0%   { transform: translateX(-100%); width: 60%; }
@@ -71,33 +105,45 @@ HTML = """
   #status { font-size: 13px; color: #555; margin-top: 8px; text-align: center; }
 
   #result { display: none; margin-top: 20px; text-align: center; }
-  #result .success { color: #1a7a1a; font-size: 15px; font-weight: bold; margin-bottom: 12px; }
-  #result .dl-btn { display: inline-block; padding: 12px 28px; background: #217a21;
-                    color: #fff; border-radius: 8px; text-decoration: none; font-weight: bold;
-                    font-size: 14px; }
-  #result .dl-btn:hover { background: #175c17; }
+  #result .success { color: #1a7a1a; font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+  #result .dl-btn { display: inline-block; padding: 12px 28px; background: var(--navy);
+                    color: #fff; border-radius: 10px; text-decoration: none; font-weight: 700;
+                    font-size: 14px; transition: background .2s; }
+  #result .dl-btn:hover { background: var(--navy-deep); }
 
   #error-box { display: none; margin-top: 14px; padding: 12px 14px; background: #fff0f0;
-               border-left: 4px solid #c00; border-radius: 4px; font-size: 13px; color: #c00; }
+               border-left: 4px solid #c00; border-radius: 6px; font-size: 13px; color: #c00; }
 
-  .step-indicator { display: flex; justify-content: space-between; margin: 16px 0 24px; font-size: 12px; color: #888; }
-  .step-indicator .active { color: #1F4E79; font-weight: bold; }
+  .step-indicator { display: flex; justify-content: space-between; margin: 4px 0 24px; font-size: 11.5px;
+                     letter-spacing: .3px; color: #aaa; text-transform: uppercase; }
+  .step-indicator .active { color: var(--amber); font-weight: 700; }
+
+  footer { padding: 16px 40px 22px; text-align: center; border-top: 1px solid var(--line); }
+  footer p { font-size: 11.5px; color: var(--muted); letter-spacing: .2px; }
+  footer p strong { color: var(--navy); font-weight: 600; }
+
+  @media (max-width: 420px) {
+    .banner { padding: 28px 24px 24px; }
+    .body-pad { padding: 24px 22px 28px; }
+    .step-indicator { font-size: 10px; white-space: nowrap; }
+    footer { padding: 14px 22px 18px; }
+  }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="logo">
-    <svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect width="56" height="56" rx="12" fill="#1F4E79"/>
-      <path d="M14 38V20a2 2 0 0 1 2-2h24a2 2 0 0 1 2 2v18" stroke="#BDD7EE" stroke-width="2" stroke-linecap="round"/>
-      <rect x="20" y="26" width="16" height="2" rx="1" fill="#fff"/>
-      <rect x="20" y="30" width="10" height="2" rx="1" fill="#BDD7EE"/>
-      <circle cx="28" cy="42" r="4" fill="#BDD7EE"/>
-      <path d="M25 42h6M28 39v6" stroke="#1F4E79" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>
+  <div class="banner">
+    <div class="logo-wrap">
+      <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTtaoCdUwAIsKpuSX0CQ5JJpijG6nb44TDKrA&s"
+           alt="Wake Up Projects logo"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+      <div class="fallback" style="display:none; width:100%; height:100%; align-items:center; justify-content:center;">WP</div>
+    </div>
+    <h1>Wake Up Projects</h1>
+    <p class="sub">Certificate Generator</p>
   </div>
-  <h1>Certificate Generator</h1>
-  <p class="sub">Upload your Excel file to generate internship certificates</p>
+
+  <div class="body-pad">
 
   <div class="step-indicator">
     <span class="active">1. Upload Excel</span>
@@ -106,6 +152,16 @@ HTML = """
   </div>
 
   <form id="upload-form" enctype="multipart/form-data">
+    <div class="checkbox-group" id="template-picker" style="display:none;">
+      <label for="template-select" style="display:block; margin-bottom:8px; cursor:default;">
+        Certificate template
+      </label>
+      <select name="template_name" id="template-select" disabled
+              style="width:100%; padding:8px; border-radius:6px; border:1px solid #E3B27E; font-size:13px; font-family:'Inter',sans-serif;">
+        <option value="">Loading templates…</option>
+      </select>
+    </div>
+
     <div class="drop-zone" id="drop-zone">
       <input type="file" name="file" id="file-input" accept=".xlsx,.xls">
       <div class="icon">📊</div>
@@ -119,7 +175,7 @@ HTML = """
         Generate certificates for which group / sheet?
       </label>
       <select name="sheet_name" id="sheet-select" disabled
-              style="width:100%; padding:8px; border-radius:6px; border:1px solid #BDD7EE; font-size:13px;">
+              style="width:100%; padding:8px; border-radius:6px; border:1px solid #E3B27E; font-size:13px; font-family:'Inter',sans-serif;">
         <option value="">Loading sheets…</option>
       </select>
     </div>
@@ -150,21 +206,58 @@ HTML = """
   </div>
 
   <div id="error-box"></div>
+  </div>
+
+  <footer>
+    <p><strong>Wake Up Projects</strong> &nbsp;·&nbsp; Developed by Ariful</p>
+  </footer>
 </div>
 
 <script>
-const dropZone   = document.getElementById('drop-zone');
-const fileInput  = document.getElementById('file-input');
-const fileName   = document.getElementById('file-name');
-const sheetPicker= document.getElementById('sheet-picker');
-const sheetSelect= document.getElementById('sheet-select');
-const submitBtn  = document.getElementById('submit-btn');
-const form       = document.getElementById('upload-form');
-const progress   = document.getElementById('progress');
-const statusEl   = document.getElementById('status');
-const resultEl   = document.getElementById('result');
-const errorBox   = document.getElementById('error-box');
-const dlLink     = document.getElementById('dl-link');
+const dropZone     = document.getElementById('drop-zone');
+const fileInput    = document.getElementById('file-input');
+const fileName     = document.getElementById('file-name');
+const templatePicker = document.getElementById('template-picker');
+const templateSelect = document.getElementById('template-select');
+const sheetPicker  = document.getElementById('sheet-picker');
+const sheetSelect  = document.getElementById('sheet-select');
+const submitBtn    = document.getElementById('submit-btn');
+const form         = document.getElementById('upload-form');
+const progress     = document.getElementById('progress');
+const statusEl     = document.getElementById('status');
+const resultEl     = document.getElementById('result');
+const errorBox     = document.getElementById('error-box');
+const dlLink       = document.getElementById('dl-link');
+
+function updateSubmitState() {
+  submitBtn.disabled = !(fileInput.files[0] && sheetSelect.value && templateSelect.value);
+}
+
+async function loadTemplates() {
+  templatePicker.style.display = 'block';
+  templateSelect.disabled = true;
+  templateSelect.innerHTML = '<option value="">Loading templates…</option>';
+  try {
+    const res = await fetch('/list-templates');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load templates');
+    if (!data.templates || data.templates.length === 0) {
+      throw new Error('No certificate templates found on the server.');
+    }
+    templateSelect.innerHTML = data.templates
+      .map(t => `<option value="${t.file.replace(/"/g, '&quot;')}">${t.label}</option>`).join('');
+    templateSelect.disabled = false;
+    if (data.templates.length === 1) {
+      // Only one template installed - select it and stay out of the way.
+      templatePicker.style.display = 'none';
+    }
+  } catch (err) {
+    templateSelect.innerHTML = '<option value="">— could not load —</option>';
+    errorBox.textContent = '❌ ' + err.message;
+    errorBox.style.display = 'block';
+  }
+  updateSubmitState();
+}
 
 async function loadSheets(file) {
   sheetPicker.style.display = 'block';
@@ -190,11 +283,13 @@ async function loadSheets(file) {
     errorBox.textContent = '❌ ' + err.message;
     errorBox.style.display = 'block';
   }
+  updateSubmitState();
 }
 
-sheetSelect.addEventListener('change', () => {
-  submitBtn.disabled = !(fileInput.files[0] && sheetSelect.value);
-});
+templateSelect.addEventListener('change', updateSubmitState);
+sheetSelect.addEventListener('change', updateSubmitState);
+
+loadTemplates();
 
 fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) {
@@ -469,9 +564,31 @@ def is_cohort_sheet(sheet_name):
     return True
 
 
+def list_templates():
+    """Scan the templates/ folder for .docx files so the dropdown always
+    reflects what's actually on disk. To add a 5th template later, just
+    drop a new .docx file in templates/ - no code change needed."""
+    try:
+        files = sorted(f for f in os.listdir(TEMPLATES_FOLDER) if f.lower().endswith('.docx'))
+    except FileNotFoundError:
+        files = []
+    templates = []
+    for f in files:
+        label = os.path.splitext(f)[0]
+        label = re.sub(r'[_-]+', ' ', label).strip().title()
+        templates.append({"file": f, "label": label})
+    return templates
+
+
 @app.route("/")
 def home():
     return render_template_string(HTML)
+
+
+@app.route("/list-templates", methods=["GET"])
+def list_templates_route():
+    """Return the available certificate templates for the dropdown."""
+    return jsonify({"templates": list_templates()})
 
 
 @app.route("/list-sheets", methods=["POST"])
@@ -515,6 +632,14 @@ def generate_certificates():
     sheet_name_filter = request.form.get('sheet_name', '').strip()
     if not sheet_name_filter:
         return jsonify({"error": "Please choose a group/sheet to generate certificates for."}), 400
+
+    template_name = request.form.get('template_name', '').strip()
+    available_templates = {t['file'] for t in list_templates()}
+    if not template_name:
+        return jsonify({"error": "Please choose a certificate template."}), 400
+    if template_name not in available_templates:
+        return jsonify({"error": f"Unknown template '{template_name}'."}), 400
+    selected_template_path = os.path.join(TEMPLATES_FOLDER, template_name)
 
     excel_path = os.path.join(UPLOAD_FOLDER, excel_file.filename)
     excel_file.save(excel_path)
@@ -671,7 +796,7 @@ def generate_certificates():
                         ctx["job_related_competences"] = sector_map[key].get("job_related_competences", "")
                         break
 
-            doc = DocxTemplate(TEMPLATE_PATH)
+            doc = DocxTemplate(selected_template_path)
             doc.render(ctx)
 
             safe_name = re.sub(r'[^\w\s-]', '', student.get('name', 'student'))
