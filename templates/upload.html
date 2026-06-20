@@ -7,9 +7,29 @@
 
 <h2>Certificate Generator</h2>
 
+<!--
+  Note: app.py's "/" route already serves a full-featured upload form
+  (mode selector, sheet dropdown, template checkboxes) generated from
+  the HTML string in app.py. This standalone file is only useful if you
+  want a bare-bones page; if so, it has to send the same fields the
+  backend requires - "mode" and, for mode=main, "sheet_name" - or
+  /generate-certificates will reject the request with a 400 error.
+-->
+
 <form action="/generate-certificates"
       method="post"
       enctype="multipart/form-data">
+
+    <input type="hidden" name="mode" value="main">
+
+    <label for="sheet_name">Group / sheet name:</label><br>
+    <input type="text"
+           id="sheet_name"
+           name="sheet_name"
+           placeholder="e.g. O-LIVE TRAIN"
+           required>
+
+    <br><br>
 
     <input type="file"
            name="file"
