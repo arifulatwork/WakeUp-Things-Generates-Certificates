@@ -79,10 +79,21 @@ HTML = """
   .banner::after { content: ""; position: absolute; inset: 0; 
                     background: radial-gradient(ellipse at 80% 0%, rgba(255,140,66,0.15) 0%, transparent 70%);
                     pointer-events: none; }
-  .banner .logo-wrap { position: relative; z-index: 1; width: 72px; height: 72px; margin: 0 auto 16px;
-                        border-radius: 50%; background: #fff; display: flex; align-items: center;
-                        justify-content: center; box-shadow: 0 8px 24px rgba(0,0,0,0.3); overflow: hidden; }
-  .banner .logo-wrap img { width: 100%; height: 100%; object-fit: cover; }
+  .banner .logo-wrap {  position: relative;
+    z-index: 1;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 16px;
+    border-radius: 50%;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    overflow: hidden; }
+  .banner .logo-wrap img { width: 90%;
+    height: 90%;
+    object-fit: contain;}
   .banner .logo-wrap .fallback { font-family: 'Fraunces', serif; font-weight: 700; color: var(--navy); font-size: 24px; }
   .banner h1 { position: relative; z-index: 1; font-family: 'Fraunces', serif; font-weight: 700;
                font-size: 28px; letter-spacing: 0.5px; color: #fff; margin-bottom: 4px; }
