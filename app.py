@@ -508,7 +508,7 @@ HEADER_MARKERS = ['name', 'surname', 'sector']
 
 # Matches a date range like "17/06/2026 - 02/07/2026" anywhere in a cell.
 DATE_RANGE_RE = re.compile(
-    r'(\d{1,2}/\d{1,2}/\d{2,4})\s*[-–—]\s*(\d{1,2}/\d{1,2}/\d{2,4})'
+    r'(?<!\w)(\d{1,2}[./]\d{1,2}[./]\d{2,4})\s*[-–—]\s*(\d{1,2}[./]\d{1,2}[./]\d{2,4})'
 )
 # Matches an Erasmus+/KA1xx style project code, e.g. "2025-1-ES01-KA121-VET-000339264".
 PROJECT_CODE_RE = re.compile(r'\b\d{4}-\d+-[A-Z0-9-]*KA\d[A-Z0-9-]+\b')
