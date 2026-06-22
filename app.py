@@ -171,6 +171,38 @@ HTML = """
   .template-options input[type=checkbox] { accent-color: var(--amber); width: 16px; height: 16px; 
                                            flex-shrink: 0; cursor: pointer; }
 
+  /* Portuguese hours input styling */
+  #portuguese-hours-box {
+    margin-top: 10px;
+    padding: 12px 14px;
+    background: #FFF8F0;
+    border-radius: 10px;
+    border: 1.5px solid #EDE6DE;
+    display: none;
+  }
+  #portuguese-hours-box label {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--navy);
+    display: block;
+    margin-bottom: 4px;
+  }
+  #portuguese-hours-box input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1.5px solid #EDE6DE;
+    font-size: 14px;
+    font-family: 'Inter', sans-serif;
+    background: white;
+    transition: all 0.2s;
+  }
+  #portuguese-hours-box input:focus {
+    outline: none;
+    border-color: var(--amber);
+    box-shadow: 0 0 0 4px rgba(255,140,66,0.1);
+  }
+
   .info-box { background: linear-gradient(135deg, #FFF8F0, #FFF3E8); border-left: 4px solid var(--amber);
               border-radius: 10px; padding: 14px 18px; margin: 16px 0; font-size: 13px; 
               color: #5B4D3A; line-height: 1.7; }
@@ -283,7 +315,7 @@ HTML = """
           Job Shadowing
         </label>
         <label>
-          <input type="checkbox" name="cert_templates" value="__PORTUGUESE_FILE__" checked>
+          <input type="checkbox" name="cert_templates" value="__PORTUGUESE_FILE__" id="portuguese-cert" checked>
           Portuguese Language
         </label>
         <label>
@@ -291,6 +323,20 @@ HTML = """
           Teachers
         </label>
       </div>
+
+      <!-- Portuguese hours input - shows only when Portuguese checkbox is checked -->
+      <div id="portuguese-hours-box">
+        <label for="portuguese_hours">🇵🇹 Course Hours</label>
+        <input type="number"
+               name="portuguese_hours"
+               id="portuguese_hours"
+               min="1"
+               max="999"
+               value="6"
+               placeholder="Enter course hours (default: 6)">
+        <div class="legend" style="margin-top:4px;">Hours to display on Portuguese language certificates</div>
+      </div>
+
       <div class="legend">✓ Teachers certificates only generate for rows where Sector = "School" in the selected group</div>
     </div>
 
@@ -351,6 +397,20 @@ const statusEl     = document.getElementById('status');
 const resultEl     = document.getElementById('result');
 const errorBox     = document.getElementById('error-box');
 const dlLink       = document.getElementById('dl-link');
+
+// Portuguese checkbox and hours field
+const portugueseCheckbox = document.getElementById('portuguese-cert');
+const hoursBox = document.getElementById('portuguese-hours-box');
+
+// Show/hide hours field based on Portuguese checkbox
+portugueseCheckbox.addEventListener('change', function() {
+    hoursBox.style.display = this.checked ? 'block' : 'none';
+});
+
+// Initially show if checked (it is checked by default)
+if (portugueseCheckbox.checked) {
+    hoursBox.style.display = 'block';
+}
 
 function updateSubmitState() {
   const checked = document.querySelectorAll('input[name="cert_templates"]:checked');
@@ -761,6 +821,15 @@ def generate_certificates():
     if not selected_templates:
         return jsonify({"error": "Please select at least one certificate type."}), 400
 
+    # Get Portuguese hours (default to 6 if not provided or invalid)
+    try:
+        portuguese_hours = request.form.get('portuguese_hours', '6')
+        portuguese_hours = int(portuguese_hours)
+        if portuguese_hours < 1:
+            portuguese_hours = 6
+    except (ValueError, TypeError):
+        portuguese_hours = 6
+
     # Validate every selected template actually exists on disk.
     available_templates = {t['file'] for t in list_templates()}
     for t in selected_templates:
@@ -929,6 +998,7 @@ def generate_certificates():
                 "OID": student.get('oid', ''),
                 "WEBSITE": student.get('website', ''),
                 "SHEET_NAME": student.get('sheet_name', ''),
+                "PORTUGUESE_HOURS": str(portuguese_hours),  # Added Portuguese hours
                 "detailed_tasks": "",
                 "job_related_competences": "",
             }
