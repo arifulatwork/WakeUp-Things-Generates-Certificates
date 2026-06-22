@@ -1,15 +1,11 @@
 services:
   - type: web
     name: certificate-generator
-    runtime: python
+    runtime: docker
     region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    plan: starter
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.8
       - key: FLASK_ENV
-        value: production 
+        value: production
 
         
