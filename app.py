@@ -8,20 +8,10 @@ import os
 import zipfile
 import io
 import re
+import shutil
 from datetime import datetime
 import tempfile
 import subprocess
-import threading
-
-# Word COM automation (Windows + Microsoft Word required). This replaces the
-# old LibreOffice/docx2pdf combo with a hardened direct call that won't hang
-# on stray Word instances or hidden dialog boxes.
-try:
-    import pythoncom
-    import win32com.client
-    HAVE_WIN32COM = True
-except ImportError:
-    HAVE_WIN32COM = False
 
 app = Flask(__name__)
 
@@ -67,78 +57,79 @@ def save_upload(file_storage):
     return path
 
 
-def kill_word_processes():
-    """Force-kill any lingering WINWORD.EXE so a stuck instance from a
-    previous failed conversion can't block new ones from working."""
-    try:
-        subprocess.run(
-            ['taskkill', '/F', '/IM', 'WINWORD.EXE'],
-            capture_output=True
-        )
-    except Exception:
-        pass
+# --- DOCX -> PDF conversion (LibreOffice, cross-platform) ------------------
+#
+# Replaces the old Word COM automation (Windows + MS Word only) with
+# LibreOffice headless conversion, which works the same way on Windows,
+# Linux, and Mac, needs no Office license, and can convert every generated
+# certificate in a single process call instead of one Word launch per file.
+
+def find_libreoffice():
+    """Locate the LibreOffice 'soffice' binary across platforms."""
+    candidate = shutil.which("soffice") or shutil.which("libreoffice")
+    if candidate:
+        return candidate
+
+    # The Windows installer doesn't always add soffice.exe to PATH.
+    win_candidates = [
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ]
+    for path in win_candidates:
+        if os.path.exists(path):
+            return path
+
+    # Default Mac app bundle location.
+    mac_candidate = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    if os.path.exists(mac_candidate):
+        return mac_candidate
+
+    return None
 
 
-def _word_convert_worker(docx_path, pdf_path, result):
-    """Runs in its own thread so COM gets its own apartment, and so the
-    caller can enforce a timeout if Word hangs (e.g. on a hidden dialog)."""
-    pythoncom.CoInitialize()
-    word = None
-    try:
-        word = win32com.client.DispatchEx("Word.Application")
-        word.Visible = False
-        word.DisplayAlerts = 0  # wdAlertsNone - suppress popup dialogs
-        doc = word.Documents.Open(
-            os.path.abspath(docx_path),
-            ReadOnly=True,
-            ConfirmConversions=False,
-            AddToRecentFiles=False,
-        )
-        doc.SaveAs(os.path.abspath(pdf_path), FileFormat=17)  # wdFormatPDF
-        doc.Close(False)
-        result['ok'] = True
-    except Exception as e:
-        result['error'] = str(e)
-    finally:
-        try:
-            if word is not None:
-                word.Quit()
-        except Exception:
-            pass
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
+LIBREOFFICE_BIN = find_libreoffice()
 
 
-def convert_docx_to_pdf(docx_path, pdf_path, timeout=60):
-    """Convert a DOCX file to PDF via Word COM automation.
-
-    Hardened against the common Windows failure modes: stray WINWORD.EXE
-    processes left over from a previous run, and silent hidden dialogs that
-    would otherwise hang the whole batch forever.
+def convert_docx_to_pdf_batch(docx_paths, output_dir, timeout=300):
+    """Convert a batch of .docx files to PDF in a single LibreOffice headless
+    call. Cross-platform (Windows/Linux/Mac) as long as LibreOffice is
+    installed. Returns {docx_path: pdf_path} for every file that converted
+    successfully.
     """
-    if not HAVE_WIN32COM:
-        return False
+    if not docx_paths:
+        return {}
 
-    kill_word_processes()
+    if not LIBREOFFICE_BIN:
+        raise RuntimeError(
+            "LibreOffice not found. Install it so the 'soffice' binary is "
+            "available: 'sudo apt install libreoffice' (Linux), "
+            "'brew install --cask libreoffice' (Mac), or download the "
+            "installer from libreoffice.org (Windows)."
+        )
 
-    result = {}
-    t = threading.Thread(
-        target=_word_convert_worker,
-        args=(docx_path, pdf_path, result),
-        daemon=True,
-    )
-    t.start()
-    t.join(timeout)
+    # Give this conversion its own LibreOffice user profile so concurrent
+    # requests on the server don't collide on a shared profile lock.
+    profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+    try:
+        cmd = [
+            LIBREOFFICE_BIN,
+            "--headless",
+            "--norestore",
+            f"-env:UserInstallation=file://{profile_dir}",
+            "--convert-to", "pdf",
+            "--outdir", output_dir,
+        ] + docx_paths
+        subprocess.run(cmd, capture_output=True, timeout=timeout, check=True)
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
-    if t.is_alive():
-        # Word is stuck (likely a hidden dialog or COM deadlock). Kill it
-        # and report failure rather than hanging the request forever.
-        kill_word_processes()
-        return False
-
-    return result.get('ok', False) and os.path.exists(pdf_path)
+    results = {}
+    for docx_path in docx_paths:
+        base = os.path.splitext(os.path.basename(docx_path))[0]
+        pdf_path = os.path.join(output_dir, base + ".pdf")
+        if os.path.exists(pdf_path):
+            results[docx_path] = pdf_path
+    return results
 
 
 def merge_pdfs(pdf_paths, output_path):
@@ -155,7 +146,6 @@ def merge_pdfs(pdf_paths, output_path):
     except ImportError:
         # If PyPDF2 is not installed, fallback to just returning the first PDF
         if pdf_paths and os.path.exists(pdf_paths[0]):
-            import shutil
             shutil.copy(pdf_paths[0], output_path)
             return True
     except Exception:
@@ -1165,12 +1155,6 @@ def generate_certificates():
                     doc.save(out_path)
                     generated_files.append(out_path)
 
-                    # Also create PDF if needed
-                    if output_format in ['pdf', 'both']:
-                        pdf_path = os.path.join(temp_dir, f"{safe_name}_{suffix}.pdf")
-                        if convert_docx_to_pdf(out_path, pdf_path):
-                            pdf_files.append(pdf_path)
-
             except Exception as e:
                 errors.append(f"Error processing {student.get('name', 'Unknown')}: {str(e)}")
 
@@ -1180,6 +1164,21 @@ def generate_certificates():
                 error_msg += " Errors: " + "; ".join(errors[:3])
             error_msg += f" No matching rows found in '{sheet_name_filter}' for the selected certificate type(s)."
             return jsonify({"error": error_msg}), 400
+
+        # Convert every generated DOCX to PDF in ONE LibreOffice batch call —
+        # much faster than converting one file at a time, and it works the
+        # same way on Windows, Linux, and Mac.
+        if output_format in ['pdf', 'both']:
+            try:
+                docx_to_pdf = convert_docx_to_pdf_batch(generated_files, temp_dir)
+                pdf_files = [docx_to_pdf[f] for f in generated_files if f in docx_to_pdf]
+                missing = len(generated_files) - len(pdf_files)
+                if missing:
+                    errors.append(f"{missing} file(s) failed to convert to PDF.")
+            except Exception as e:
+                errors.append(f"PDF conversion failed: {e}")
+                if output_format == 'pdf':
+                    return jsonify({"error": f"PDF conversion failed: {e}"}), 500
 
         zip_buffer = io.BytesIO()
 
@@ -1219,7 +1218,6 @@ def generate_certificates():
                 pass
         # Clean up temp directory
         try:
-            import shutil
             shutil.rmtree(temp_dir)
         except Exception:
             pass
