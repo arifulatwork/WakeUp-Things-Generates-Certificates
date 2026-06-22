@@ -1,3 +1,4 @@
+# app.py
 from flask import Flask, request, send_file, render_template_string, jsonify
 import pandas as pd
 import openpyxl
@@ -8,6 +9,9 @@ import zipfile
 import io
 import re
 from datetime import datetime
+from docx2pdf import convert
+import tempfile
+import subprocess
 
 app = Flask(__name__)
 
@@ -17,24 +21,17 @@ app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25 MB
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 OUTPUT_FOLDER = os.path.join(os.path.dirname(__file__), "generated")
 TEMPLATES_FOLDER = os.path.join(os.path.dirname(__file__), "templates")
-TEMPLATE_PATH = os.path.join(TEMPLATES_FOLDER, "certificate_template.docx")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMPLATES_FOLDER, exist_ok=True)
 
 # --- Certificate type definitions -----------------------------------------
-# Single source of truth for the 4 selectable certificate types. The
-# filenames must match exactly what's on disk in templates/ (note the
-# trailing space in the Teachers filename - that's intentional, it matches
-# the actual file).
 VET_TEMPLATE_FILE = "certificate_template.docx"
 JOB_SHADOWING_FILE = "Job_Shadowing_Certificates.docx"
 PORTUGUESE_FILE = "Portuguese_certificate_Template.docx"
 TEACHERS_FILE = "teachers_CERTIFICATES .docx"
 
-# Suffix appended to the output filename per certificate type, so a student
-# who gets multiple certs in one run doesn't have collisions in the zip.
 TEMPLATE_SUFFIX = {
     VET_TEMPLATE_FILE: "VET",
     JOB_SHADOWING_FILE: "Job_Shadowing",
@@ -58,6 +55,59 @@ def save_upload(file_storage):
     path = os.path.join(UPLOAD_FOLDER, filename)
     file_storage.save(path)
     return path
+
+
+def convert_docx_to_pdf(docx_path, pdf_path):
+    """Convert a DOCX file to PDF using LibreOffice (headless)."""
+    try:
+        # Try using LibreOffice first (most reliable on servers)
+        subprocess.run([
+            'libreoffice',
+            '--headless',
+            '--convert-to', 'pdf',
+            '--outdir', os.path.dirname(pdf_path),
+            docx_path
+        ], check=True, capture_output=True)
+        
+        # The output file will be named the same as input but with .pdf extension
+        generated_pdf = os.path.splitext(docx_path)[0] + '.pdf'
+        if os.path.exists(generated_pdf):
+            os.rename(generated_pdf, pdf_path)
+            return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    try:
+        # Fallback to docx2pdf (works on Windows with Word installed)
+        convert(docx_path, pdf_path)
+        return True
+    except Exception:
+        pass
+    
+    return False
+
+
+def merge_pdfs(pdf_paths, output_path):
+    """Merge multiple PDF files into one using PyPDF2."""
+    try:
+        from PyPDF2 import PdfMerger
+        merger = PdfMerger()
+        for pdf in pdf_paths:
+            if os.path.exists(pdf):
+                merger.append(pdf)
+        merger.write(output_path)
+        merger.close()
+        return True
+    except ImportError:
+        # If PyPDF2 is not installed, fallback to just returning the first PDF
+        if pdf_paths and os.path.exists(pdf_paths[0]):
+            import shutil
+            shutil.copy(pdf_paths[0], output_path)
+            return True
+    except Exception:
+        pass
+    return False
+
 
 HTML = """
 <!DOCTYPE html>
@@ -203,6 +253,46 @@ HTML = """
     box-shadow: 0 0 0 4px rgba(255,140,66,0.1);
   }
 
+  /* Output format selection */
+  .format-group {
+    margin: 16px 0;
+    padding: 16px 20px;
+    background: #FDFBF9;
+    border-radius: 12px;
+    border: 1.5px solid #EDE6DE;
+  }
+  .format-group .group-title {
+    display: block;
+    margin-bottom: 10px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--navy);
+    letter-spacing: 0.3px;
+  }
+  .format-options {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .format-options label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 8px 14px;
+    background: white;
+    border-radius: 10px;
+    border: 1.5px solid #EDE6DE;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .format-options label:hover { border-color: var(--amber); background: #FFF8F0; }
+  .format-options label.checked { border-color: var(--amber); background: #FFF8F0; color: var(--navy); }
+  .format-options input[type=radio] { accent-color: var(--amber); width: 16px; height: 16px; 
+                                      flex-shrink: 0; cursor: pointer; }
+
   .info-box { background: linear-gradient(135deg, #FFF8F0, #FFF3E8); border-left: 4px solid var(--amber);
               border-radius: 10px; padding: 14px 18px; margin: 16px 0; font-size: 13px; 
               color: #5B4D3A; line-height: 1.7; }
@@ -267,6 +357,7 @@ HTML = """
     .banner { padding: 28px 20px 24px; }
     .body-pad { padding: 20px 18px 24px; }
     .template-options { grid-template-columns: 1fr; }
+    .format-options { flex-direction: column; }
     .step-indicator .step .label { font-size: 8px; }
     .step-indicator .step .num { width: 22px; height: 22px; font-size: 10px; }
     footer { padding: 14px 18px 18px; }
@@ -340,6 +431,26 @@ HTML = """
       <div class="legend">✓ Teachers certificates only generate for rows where Sector = "School" in the selected group</div>
     </div>
 
+    <!-- Output Format Selection -->
+    <div class="format-group">
+      <span class="group-title">📄 Output Format</span>
+      <div class="format-options">
+        <label class="checked">
+          <input type="radio" name="output_format" value="pdf" checked>
+          PDF (Merged)
+        </label>
+        <label>
+          <input type="radio" name="output_format" value="docx">
+          DOCX (Individual)
+        </label>
+        <label>
+          <input type="radio" name="output_format" value="both">
+          Both
+        </label>
+      </div>
+      <div class="legend">PDF: All certificates merged into one file · DOCX: Individual files in ZIP</div>
+    </div>
+
     <div class="drop-zone" id="drop-zone">
       <input type="file" name="file" id="file-input" accept=".xlsx,.xls">
       <span class="icon">📊</span>
@@ -355,7 +466,7 @@ HTML = """
       <strong>Sector = School</strong> rows only ever get the Teachers certificate. Every other row gets
       whichever of VET / Job Shadowing / Portuguese you checked.
       <br><br>
-      <strong>Optional:</strong> a <code>TASK DATABASE</code> sheet supplies detailed tasks for the VET certificate, matched by Sector.
+      <strong>Output:</strong> PDF merges all certificates into one file. DOCX gives individual files.
     </div>
 
     <button type="submit" id="submit-btn" disabled>
@@ -372,7 +483,7 @@ HTML = """
     <span class="success-icon">🎉</span>
     <div class="success">Certificates generated successfully!</div>
     <a id="dl-link" class="dl-btn" href="#">
-      <span class="icon">⬇</span> Download ZIP
+      <span class="icon">⬇</span> Download
     </a>
   </div>
 
@@ -411,6 +522,15 @@ portugueseCheckbox.addEventListener('change', function() {
 if (portugueseCheckbox.checked) {
     hoursBox.style.display = 'block';
 }
+
+// Format radio button styling
+document.querySelectorAll('.format-options input[type="radio"]').forEach(rb => {
+  rb.addEventListener('change', function() {
+    document.querySelectorAll('.format-options label').forEach(l => l.classList.remove('checked'));
+    if (this.checked) this.closest('label').classList.add('checked');
+  });
+  if (rb.checked) rb.closest('label').classList.add('checked');
+});
 
 function updateSubmitState() {
   const checked = document.querySelectorAll('input[name="cert_templates"]:checked');
@@ -521,8 +641,6 @@ updateSubmitState();
 """
 
 # Substitute the actual on-disk template filenames into the checkbox values.
-# Done this way (instead of f-string on the whole HTML) so the literal
-# curly braces used elsewhere in the <style> block don't need escaping.
 HTML = (
     HTML.replace("__VET_FILE__", VET_TEMPLATE_FILE)
         .replace("__JOB_SHADOWING_FILE__", JOB_SHADOWING_FILE)
@@ -538,8 +656,6 @@ COL_MAP = {
     'birth_date': ['date of birth', 'birth date', 'birth_date', 'dob', 'birthday'],
     'start_date': ['start date', 'start_date', 'start', 'begin', 'begin date'],
     'end_date': ['end date', 'end_date', 'end', 'finish', 'finish date'],
-    # "sector database" is the normalized sector used to match TASK DATABASE -
-    # it must be tried BEFORE the generic "sector" so it wins when both exist.
     'sector': ['sector database', 'sector', 'area', 'field', 'department', 'study course'],
     'company': ['company', 'host org', 'host_org', 'host organisation', 'organization', 'empresa'],
     'company_address': ['address', 'company address', 'host address', 'host_address', 'endereco', 'direccion'],
@@ -585,15 +701,7 @@ def normalize_sector(sector):
 
 
 def find_header_row(sheet_path, sheet_name, max_scan_rows=15, markers=None, min_matches=2):
-    """
-    Scan the top of a sheet to find which row actually contains the column
-    headers (e.g. 'Name', 'Surname', 'Sector'), instead of assuming it's
-    always row 0 or row 1. Sheets in this workbook put a title (and
-    sometimes a project-number row) above the real header row, and that
-    offset varies sheet to sheet.
-
-    Returns the 0-based row index to pass to pandas as `header=`.
-    """
+    """Scan the top of a sheet to find which row actually contains the column headers."""
     if markers is None:
         markers = HEADER_MARKERS
     wb = openpyxl.load_workbook(sheet_path, data_only=True, read_only=True)
@@ -603,24 +711,19 @@ def find_header_row(sheet_path, sheet_name, max_scan_rows=15, markers=None, min_
             values = [str(c.value).strip().lower() if c.value is not None else '' for c in row]
             matches = sum(1 for marker in markers if any(marker in v for v in values))
             if matches >= min_matches:
-                return row[0].row - 1  # convert to 0-based for pandas header=
+                return row[0].row - 1
     finally:
         wb.close()
-    return None  # couldn't find it; caller falls back to a default
+    return None
 
 
 def extract_sheet_metadata(sheet_path, sheet_name, header_row_idx, max_scan_rows=15):
-    """
-    Pull a shared date range and/or project code from the title rows sitting
-    above the detected header row (these sheets often print one combined
-    date range / project code for the whole group instead of per-student
-    columns).
-    """
+    """Pull a shared date range and/or project code from the title rows."""
     metadata = {'start_date': '', 'end_date': '', 'project_code': ''}
     if header_row_idx is None:
         scan_limit = max_scan_rows
     else:
-        scan_limit = header_row_idx + 1  # only look above the header row
+        scan_limit = header_row_idx + 1
 
     wb = openpyxl.load_workbook(sheet_path, data_only=True, read_only=True)
     try:
@@ -643,16 +746,7 @@ def extract_sheet_metadata(sheet_path, sheet_name, header_row_idx, max_scan_rows
 
 
 def match_column(df_columns, possible):
-    """
-    Find the best-matching column name for a standard field.
-
-    Two sheets in this workbook can have BOTH a generic column (e.g. 'Sector')
-    and a more specific one (e.g. 'Sector Database') that both technically
-    match. Picking "whichever comes first in the sheet" is unreliable -
-    instead, score every column against the candidate list and pick the best
-    score: an exact match always beats a substring match, and earlier entries
-    in `possible` (more specific terms) always beat later ones.
-    """
+    """Find the best-matching column name for a standard field."""
     best_col, best_score = None, None
     for col in df_columns:
         col_lower = col.lower().strip()
@@ -673,9 +767,7 @@ def match_column(df_columns, possible):
 
 
 def extract_student_data(df):
-    """Extract student/group-row data from a dataframe with various column
-    name variations. Works for any cohort sheet, regardless of which
-    certificate type(s) will eventually be generated from it."""
+    """Extract student/group-row data from a dataframe."""
     students = []
 
     actual_cols = {}
@@ -727,9 +819,6 @@ def extract_student_data(df):
                     'working_hours', 'vat', 'pic', 'oid', 'website']:
             student.setdefault(key, '')
 
-        # SECTOR_DATABASE is used by a couple of templates as a distinct
-        # placeholder from SECTOR - fall back to the same value if no
-        # separate "Sector Database" column was found.
         student.setdefault('sector_database', student.get('sector', ''))
 
         students.append(student)
@@ -737,17 +826,14 @@ def extract_student_data(df):
     return students
 
 
-# Sheet names that are never cohorts of students - reused by both the
-# /list-sheets route (so the dropdown doesn't show them) and
-# /generate-certificates (so they're never scanned for students).
+# Sheet names that are never cohorts of students.
 NON_COHORT_SHEET_NAMES = {
     'task database', 'company database', 'task database - olivetrain',
 }
 
 
 def is_cohort_sheet(sheet_name):
-    """True if a sheet looks like a student/group sheet rather than an
-    admin sheet (Task Database, Company Database, Template, etc.)."""
+    """True if a sheet looks like a student/group sheet rather than an admin sheet."""
     name_lower = sheet_name.strip().lower()
     if name_lower in NON_COHORT_SHEET_NAMES:
         return False
@@ -757,8 +843,7 @@ def is_cohort_sheet(sheet_name):
 
 
 def list_templates():
-    """Scan the templates/ folder for .docx files so we can validate that
-    whatever the frontend submits actually exists on disk."""
+    """Scan the templates/ folder for .docx files."""
     try:
         files = sorted(f for f in os.listdir(TEMPLATES_FOLDER) if f.lower().endswith('.docx'))
     except FileNotFoundError:
@@ -778,9 +863,7 @@ def home():
 
 @app.route("/list-sheets", methods=["POST"])
 def list_sheets():
-    """Return the cohort/group sheet names in an uploaded workbook so the
-    frontend can offer them in a dropdown, instead of hardcoding one
-    specific group name like 'O-LIVE TRAIN'."""
+    """Return the cohort/group sheet names in an uploaded workbook."""
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
 
@@ -820,6 +903,11 @@ def generate_certificates():
     selected_templates = request.form.getlist("cert_templates")
     if not selected_templates:
         return jsonify({"error": "Please select at least one certificate type."}), 400
+
+    # Get output format preference
+    output_format = request.form.get('output_format', 'pdf')
+    if output_format not in ['pdf', 'docx', 'both']:
+        output_format = 'pdf'
 
     # Get Portuguese hours (default to 6 if not provided or invalid)
     try:
@@ -884,8 +972,7 @@ def generate_certificates():
         if not all_students:
             return jsonify({"error": f"No student data found in sheet '{sheet_name_filter}'. Make sure it has columns like 'Name' or 'Surname'."}), 400
 
-        # Build a sector -> {detailed_tasks, job_related_competences} map
-        # from the Task Database sheet, used for the VET certificate.
+        # Build a sector -> {detailed_tasks, job_related_competences} map from the Task Database sheet.
         sector_map = {}
         try:
             task_sheet_names = ['Task Database', 'TASK DATABASE', 'Task database', 'tasks', 'Sectors']
@@ -937,127 +1024,153 @@ def generate_certificates():
     except Exception as e:
         return jsonify({"error": f"Could not read Excel file: {e}"}), 400
 
-    # The spreadsheet itself isn't needed past this point (we now have
-    # all_students / sector_map in memory) - remove it so uploaded
-    # student data doesn't pile up on disk.
     try:
         os.remove(excel_path)
     except Exception:
         pass
 
     generated_files = []
+    pdf_files = []
     errors = []
 
-    for student in all_students:
-        try:
-            notes = student.get('notes', '').lower()
-            experience = student.get('experience', '').lower()
-            if 'will not come' in notes or "didn't show up" in notes or 'will not come' in experience or "didn't show up" in experience:
-                continue
+    # Create a temporary directory for PDF generation
+    temp_dir = tempfile.mkdtemp()
 
-            sector_key = normalize_sector(student.get('sector', ''))
-            is_school = sector_key == 'school'
+    try:
+        for student in all_students:
+            try:
+                notes = student.get('notes', '').lower()
+                experience = student.get('experience', '').lower()
+                if 'will not come' in notes or "didn't show up" in notes or 'will not come' in experience or "didn't show up" in experience:
+                    continue
 
-            # School-sector rows ONLY ever get the Teachers certificate.
-            # Everyone else gets whichever non-Teachers templates were
-            # checked. Selecting "Teachers" only produces output for rows
-            # where Sector = School in the chosen group.
-            if is_school:
-                templates_for_row = [t for t in selected_templates if t == TEACHERS_FILE]
-            else:
-                templates_for_row = [t for t in selected_templates if t != TEACHERS_FILE]
+                sector_key = normalize_sector(student.get('sector', ''))
+                is_school = sector_key == 'school'
 
-            if not templates_for_row:
-                continue
+                # School-sector rows ONLY ever get the Teachers certificate.
+                if is_school:
+                    templates_for_row = [t for t in selected_templates if t == TEACHERS_FILE]
+                else:
+                    templates_for_row = [t for t in selected_templates if t != TEACHERS_FILE]
 
-            ctx = {
-                "NAME": student.get('name', ''),
-                "BIRTH_DATE": student.get('birth_date', ''),
-                "START": student.get('start_date', ''),
-                "END": student.get('end_date', ''),
-                "SECTOR": student.get('sector', ''),
-                "SECTOR_DATABASE": student.get('sector_database', ''),
-                "HOST_ORG": student.get('company', ''),
-                "HOST_ORG_ADDRESS": student.get('company_address', ''),
-                "PROJECT_CODE": student.get('project_code', ''),
-                "TUTOR": student.get('tutor', ''),
-                "TELEPHONE": student.get('telephone', ''),
-                "EMAIL": student.get('email', ''),
-                "NOTES": student.get('notes', ''),
-                "DRESS_CODE": student.get('dress_code', ''),
-                "PICKUP": student.get('pickup', ''),
-                "PRESENTATION": student.get('presentation', ''),
-                "WORKING_HOURS": student.get('working_hours', ''),
-                "AGE": student.get('age', ''),
-                "LANGUAGES": student.get('languages', ''),
-                "ALLERGIES": student.get('allergies', ''),
-                "EXPERIENCE": student.get('experience', ''),
-                "EXPECTATION": student.get('expectation', ''),
-                "VAT": student.get('vat', ''),
-                "PIC": student.get('pic', ''),
-                "OID": student.get('oid', ''),
-                "WEBSITE": student.get('website', ''),
-                "SHEET_NAME": student.get('sheet_name', ''),
-                "PORTUGUESE_HOURS": str(portuguese_hours),  # Added Portuguese hours
-                "detailed_tasks": "",
-                "job_related_competences": "",
-            }
+                if not templates_for_row:
+                    continue
 
-            if sector_key in sector_map:
-                ctx["detailed_tasks"] = sector_map[sector_key].get("detailed_tasks", "")
-                ctx["job_related_competences"] = sector_map[sector_key].get("job_related_competences", "")
-            else:
-                for key in sector_map:
-                    if key in sector_key or sector_key in key:
-                        ctx["detailed_tasks"] = sector_map[key].get("detailed_tasks", "")
-                        ctx["job_related_competences"] = sector_map[key].get("job_related_competences", "")
-                        break
+                ctx = {
+                    "NAME": student.get('name', ''),
+                    "BIRTH_DATE": student.get('birth_date', ''),
+                    "START": student.get('start_date', ''),
+                    "END": student.get('end_date', ''),
+                    "SECTOR": student.get('sector', ''),
+                    "SECTOR_DATABASE": student.get('sector_database', ''),
+                    "HOST_ORG": student.get('company', ''),
+                    "HOST_ORG_ADDRESS": student.get('company_address', ''),
+                    "PROJECT_CODE": student.get('project_code', ''),
+                    "TUTOR": student.get('tutor', ''),
+                    "TELEPHONE": student.get('telephone', ''),
+                    "EMAIL": student.get('email', ''),
+                    "NOTES": student.get('notes', ''),
+                    "DRESS_CODE": student.get('dress_code', ''),
+                    "PICKUP": student.get('pickup', ''),
+                    "PRESENTATION": student.get('presentation', ''),
+                    "WORKING_HOURS": student.get('working_hours', ''),
+                    "AGE": student.get('age', ''),
+                    "LANGUAGES": student.get('languages', ''),
+                    "ALLERGIES": student.get('allergies', ''),
+                    "EXPERIENCE": student.get('experience', ''),
+                    "EXPECTATION": student.get('expectation', ''),
+                    "VAT": student.get('vat', ''),
+                    "PIC": student.get('pic', ''),
+                    "OID": student.get('oid', ''),
+                    "WEBSITE": student.get('website', ''),
+                    "SHEET_NAME": student.get('sheet_name', ''),
+                    "PORTUGUESE_HOURS": str(portuguese_hours),
+                    "detailed_tasks": "",
+                    "job_related_competences": "",
+                }
 
-            safe_name = re.sub(r'[^\w\s-]', '', student.get('name', 'student'))
-            safe_name = re.sub(r'[-\s]+', '_', safe_name)
+                if sector_key in sector_map:
+                    ctx["detailed_tasks"] = sector_map[sector_key].get("detailed_tasks", "")
+                    ctx["job_related_competences"] = sector_map[sector_key].get("job_related_competences", "")
+                else:
+                    for key in sector_map:
+                        if key in sector_key or sector_key in key:
+                            ctx["detailed_tasks"] = sector_map[key].get("detailed_tasks", "")
+                            ctx["job_related_competences"] = sector_map[key].get("job_related_competences", "")
+                            break
 
-            for template_file in templates_for_row:
-                template_path = os.path.join(TEMPLATES_FOLDER, template_file)
-                doc = DocxTemplate(template_path)
-                doc.render(ctx)
-                suffix = TEMPLATE_SUFFIX.get(template_file, os.path.splitext(template_file)[0])
-                out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_{suffix}.docx")
-                doc.save(out_path)
-                generated_files.append(out_path)
+                safe_name = re.sub(r'[^\w\s-]', '', student.get('name', 'student'))
+                safe_name = re.sub(r'[-\s]+', '_', safe_name)
 
-        except Exception as e:
-            errors.append(f"Error processing {student.get('name', 'Unknown')}: {str(e)}")
+                for template_file in templates_for_row:
+                    template_path = os.path.join(TEMPLATES_FOLDER, template_file)
+                    doc = DocxTemplate(template_path)
+                    doc.render(ctx)
+                    suffix = TEMPLATE_SUFFIX.get(template_file, os.path.splitext(template_file)[0])
+                    out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_{suffix}.docx")
+                    doc.save(out_path)
+                    generated_files.append(out_path)
 
-    if not generated_files:
-        error_msg = "No certificates generated."
-        if errors:
-            error_msg += " Errors: " + "; ".join(errors[:3])
-        error_msg += f" No matching rows found in '{sheet_name_filter}' for the selected certificate type(s)."
-        return jsonify({"error": error_msg}), 400
+                    # Also create PDF if needed
+                    if output_format in ['pdf', 'both']:
+                        pdf_path = os.path.join(temp_dir, f"{safe_name}_{suffix}.pdf")
+                        if convert_docx_to_pdf(out_path, pdf_path):
+                            pdf_files.append(pdf_path)
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            except Exception as e:
+                errors.append(f"Error processing {student.get('name', 'Unknown')}: {str(e)}")
+
+        if not generated_files:
+            error_msg = "No certificates generated."
+            if errors:
+                error_msg += " Errors: " + "; ".join(errors[:3])
+            error_msg += f" No matching rows found in '{sheet_name_filter}' for the selected certificate type(s)."
+            return jsonify({"error": error_msg}), 400
+
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            if output_format in ['pdf', 'both'] and pdf_files:
+                # Merge all PDFs into one
+                merged_pdf_path = os.path.join(temp_dir, "merged_certificates.pdf")
+                if merge_pdfs(pdf_files, merged_pdf_path):
+                    zf.write(merged_pdf_path, "certificates_merged.pdf")
+                else:
+                    # If merge fails, add individual PDFs
+                    for pdf in pdf_files:
+                        if os.path.exists(pdf):
+                            zf.write(pdf, os.path.basename(pdf))
+
+            if output_format in ['docx', 'both']:
+                # Add individual DOCX files
+                for f in generated_files:
+                    if os.path.exists(f):
+                        zf.write(f, os.path.basename(f))
+
+        zip_buffer.seek(0)
+
+        return send_file(
+            zip_buffer,
+            as_attachment=True,
+            download_name="certificates.zip",
+            mimetype="application/zip"
+        )
+
+    finally:
+        # Clean up generated files
         for f in generated_files:
-            zf.write(f, os.path.basename(f))
-    zip_buffer.seek(0)
-
-    for f in generated_files:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        # Clean up temp directory
         try:
-            os.remove(f)
+            import shutil
+            shutil.rmtree(temp_dir)
         except Exception:
             pass
 
-    return send_file(
-        zip_buffer,
-        as_attachment=True,
-        download_name="certificates.zip",
-        mimetype="application/zip"
-    )
-
 
 if __name__ == "__main__":
-    # Debug mode enables the interactive Werkzeug debugger, which allows
-    # arbitrary code execution if reached by someone other than the
-    # developer. Default to OFF; opt in locally with FLASK_DEBUG=1.
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(debug=debug_mode, port=5000)

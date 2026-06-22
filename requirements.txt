@@ -1,0 +1,7 @@
+Flask==2.3.3
+pandas==2.0.3
+openpyxl==3.1.2
+docxtpl==0.16.7
+Werkzeug==2.3.7
+python-docx==0.8.11
+PyPDF2==3.0.1
