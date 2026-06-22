@@ -17,12 +17,37 @@ app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25 MB
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 OUTPUT_FOLDER = os.path.join(os.path.dirname(__file__), "generated")
 TEMPLATES_FOLDER = os.path.join(os.path.dirname(__file__), "templates")
-# Kept for backward compatibility with any code/notes referencing the old single-template path.
 TEMPLATE_PATH = os.path.join(TEMPLATES_FOLDER, "certificate_template.docx")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMPLATES_FOLDER, exist_ok=True)
+
+# --- Certificate type definitions -----------------------------------------
+# Single source of truth for the 4 selectable certificate types. The
+# filenames must match exactly what's on disk in templates/ (note the
+# trailing space in the Teachers filename - that's intentional, it matches
+# the actual file).
+VET_TEMPLATE_FILE = "certificate_template.docx"
+JOB_SHADOWING_FILE = "Job_Shadowing_Certificates.docx"
+PORTUGUESE_FILE = "Portuguese_certificate_Template.docx"
+TEACHERS_FILE = "teachers_CERTIFICATES .docx"
+
+# Suffix appended to the output filename per certificate type, so a student
+# who gets multiple certs in one run doesn't have collisions in the zip.
+TEMPLATE_SUFFIX = {
+    VET_TEMPLATE_FILE: "VET",
+    JOB_SHADOWING_FILE: "Job_Shadowing",
+    PORTUGUESE_FILE: "Portuguese_Language",
+    TEACHERS_FILE: "Teachers_Certificate",
+}
+
+CERT_TYPE_OPTIONS = [
+    {"file": VET_TEMPLATE_FILE, "label": "VET Certificate"},
+    {"file": JOB_SHADOWING_FILE, "label": "Job Shadowing"},
+    {"file": PORTUGUESE_FILE, "label": "Portuguese Language"},
+    {"file": TEACHERS_FILE, "label": "Teachers"},
+]
 
 
 def save_upload(file_storage):
@@ -102,18 +127,6 @@ HTML = """
 
   .body-pad { padding: 32px 40px 28px; }
 
-  .mode-selector { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-  .mode-selector button { padding: 14px 16px; border: 2px solid #E8E0D8; border-radius: 12px;
-                          background: #FAF8F6; cursor: pointer; font-weight: 600; font-size: 14px;
-                          transition: all 0.25s; color: var(--muted); font-family: 'Inter', sans-serif;
-                          display: flex; align-items: center; justify-content: center; gap: 8px; }
-  .mode-selector button .icon { font-size: 20px; }
-  .mode-selector button:hover { border-color: var(--amber); background: #FFF8F0; }
-  .mode-selector button.active { border-color: var(--amber); background: linear-gradient(135deg, #FFF8F0, #FFEEDB);
-                                  color: var(--navy); box-shadow: 0 4px 12px rgba(255,140,66,0.2); }
-  .mode-selector button .badge { font-size: 10px; background: var(--amber); color: white; 
-                                 padding: 2px 10px; border-radius: 20px; font-weight: 700; }
-
   .step-indicator { display: flex; justify-content: space-between; margin: 0 0 20px 0;
                     padding: 0 4px; position: relative; }
   .step-indicator::before { content: ""; position: absolute; top: 50%; left: 20px; right: 20px;
@@ -148,7 +161,7 @@ HTML = """
                      border-radius: 12px; border: 1.5px solid #EDE6DE; }
   .checkbox-group .group-title { display: block; margin-bottom: 10px; font-weight: 600;
                                   font-size: 13px; color: var(--navy); letter-spacing: 0.3px; }
-  .template-options { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .template-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .template-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; 
                             padding: 10px 14px; background: white; border-radius: 10px; 
                             border: 1.5px solid #EDE6DE; cursor: pointer; transition: all 0.2s;
@@ -218,14 +231,9 @@ HTML = """
   footer p { font-size: 12px; color: var(--muted-light); letter-spacing: 0.3px; }
   footer p strong { color: var(--navy); font-weight: 600; }
 
-  .template-badge { display: inline-block; font-size: 9px; background: var(--amber); color: white;
-                    padding: 2px 8px; border-radius: 20px; font-weight: 700; letter-spacing: 0.3px;
-                    margin-left: 4px; }
-
   @media (max-width: 600px) {
     .banner { padding: 28px 20px 24px; }
     .body-pad { padding: 20px 18px 24px; }
-    .mode-selector { grid-template-columns: 1fr; }
     .template-options { grid-template-columns: 1fr; }
     .step-indicator .step .label { font-size: 8px; }
     .step-indicator .step .num { width: 22px; height: 22px; font-size: 10px; }
@@ -249,51 +257,41 @@ HTML = """
   <div class="body-pad">
 
   <div class="step-indicator">
-    <div class="step active"><span class="num">1</span><span class="label">Select Mode</span></div>
+    <div class="step active"><span class="num">1</span><span class="label">Configure</span></div>
     <div class="step"><span class="num">2</span><span class="label">Upload File</span></div>
     <div class="step"><span class="num">3</span><span class="label">Download</span></div>
   </div>
 
-  <div class="mode-selector">
-    <button id="mode-main" class="active" onclick="setMode('main')">
-      <span class="icon">📄</span> Main Template
-      <span class="badge">certificate_template</span>
-    </button>
-    <button id="mode-others" onclick="setMode('others')">
-      <span class="icon">📋</span> Others DB
-      <span class="badge">3 Templates</span>
-    </button>
-  </div>
-
   <form id="upload-form" enctype="multipart/form-data">
-    <div id="main-mode-fields">
-      <div class="sheet-select-wrap" id="sheet-picker" style="display:none;">
-        <label for="sheet-select">📌 Select Group / Sheet</label>
-        <select name="sheet_name" id="sheet-select" disabled>
-          <option value="">Loading sheets…</option>
-        </select>
-      </div>
+
+    <div class="sheet-select-wrap" id="sheet-picker" style="display:none;">
+      <label for="sheet-select">📌 Select Group / Sheet</label>
+      <select name="sheet_name" id="sheet-select" disabled>
+        <option value="">Loading sheets…</option>
+      </select>
     </div>
 
-    <div id="others-mode-fields" style="display:none;">
-      <div class="checkbox-group">
-        <span class="group-title">📜 Select Certificate Types</span>
-        <div class="template-options">
-          <label>
-            <input type="checkbox" name="others_templates" value="Job_Shadowing_Certificates.docx" checked>
-            Job Shadowing
-          </label>
-          <label>
-            <input type="checkbox" name="others_templates" value="Portuguese_certificate_Template.docx" checked>
-            Portuguese Language
-          </label>
-          <label>
-            <input type="checkbox" name="others_templates" value="teachers_CERTIFICATES .docx" checked>
-            Teachers <span class="template-badge">Professors</span>
-          </label>
-        </div>
-        <div class="legend">✓ Students from "OTHERS DATABASE" sheet · Professors get Teacher certificates</div>
+    <div class="checkbox-group">
+      <span class="group-title">📜 Select Certificate Types</span>
+      <div class="template-options">
+        <label>
+          <input type="checkbox" name="cert_templates" value="__VET_FILE__" checked>
+          VET Certificate
+        </label>
+        <label>
+          <input type="checkbox" name="cert_templates" value="__JOB_SHADOWING_FILE__" checked>
+          Job Shadowing
+        </label>
+        <label>
+          <input type="checkbox" name="cert_templates" value="__PORTUGUESE_FILE__" checked>
+          Portuguese Language
+        </label>
+        <label>
+          <input type="checkbox" name="cert_templates" value="__TEACHERS_FILE__" checked>
+          Teachers
+        </label>
       </div>
+      <div class="legend">✓ Teachers certificates only generate for rows where Sector = "School" in the selected group</div>
     </div>
 
     <div class="drop-zone" id="drop-zone">
@@ -304,30 +302,15 @@ HTML = """
     </div>
     <div id="file-name"></div>
 
-    <div id="info-main" class="info-box">
-      <strong>📌 Main Template Mode</strong><br>
-      Uses <code>certificate_template.docx</code> for any selected sheet.
+    <div class="info-box">
+      <strong>📌 How it works</strong><br>
+      Pick the group/sheet to process, then check which certificate type(s) to generate.
       <br><br>
-      <strong>Expected columns:</strong><br>
-      <code>Name · Surname · Age · Sector · Sector Database · Experience · Languages · Alergies · COMPANY · Address · Tutor · Telephone · Email · VAT · PIC · OID · Website · Follow Up · Comentarios · Dress Code · Pickup · Apresentação</code>
+      <strong>Sector = School</strong> rows only ever get the Teachers certificate. Every other row gets
+      whichever of VET / Job Shadowing / Portuguese you checked.
       <br><br>
-      <strong>Optional:</strong> <code>TASK DATABASE</code> sheet for detailed tasks.
+      <strong>Optional:</strong> a <code>TASK DATABASE</code> sheet supplies detailed tasks for the VET certificate, matched by Sector.
     </div>
-
-    <div id="info-others" class="info-box" style="display:none;">
-      <strong>📌 Others Database Mode</strong><br>
-      Processes only the <strong>"OTHERS DATABASE"</strong> sheet.
-      <br><br>
-      <strong>For Students:</strong> Generates Job Shadowing & Portuguese Language certificates.<br>
-      <strong>For Professors:</strong> Generates Teachers certificates (from the Professors field).
-      <br><br>
-      <strong>Expected columns:</strong><br>
-      <code>Name · Surname · Age · Sector · Sector Database · Experience · Expectation · Languages · Alergies · COMPANY · ADDRESS · TUTOR · Telephone · Email · VAT · PIC · OID · Website · Dress Code · Working hours · Feedback</code>
-      <br><br>
-      <strong>Professors field:</strong> Contains professor names for teacher certificates.
-    </div>
-
-    <input type="hidden" name="mode" id="mode-input" value="main">
 
     <button type="submit" id="submit-btn" disabled>
       <span id="btn-text">Generate Certificates</span>
@@ -356,38 +339,6 @@ HTML = """
 </div>
 
 <script>
-let currentMode = 'main';
-
-function setMode(mode) {
-  currentMode = mode;
-  document.getElementById('mode-input').value = mode;
-  
-  // Update button styles
-  document.getElementById('mode-main').className = mode === 'main' ? 'active' : '';
-  document.getElementById('mode-others').className = mode === 'others' ? 'active' : '';
-  
-  // Show/hide fields
-  document.getElementById('main-mode-fields').style.display = mode === 'main' ? 'block' : 'none';
-  document.getElementById('others-mode-fields').style.display = mode === 'others' ? 'block' : 'none';
-  document.getElementById('info-main').style.display = mode === 'main' ? 'block' : 'none';
-  document.getElementById('info-others').style.display = mode === 'others' ? 'block' : 'none';
-  
-  // Update step indicator
-  document.querySelectorAll('.step-indicator .step').forEach((el, i) => {
-    el.className = 'step';
-    if (i === 0) el.classList.add('active');
-  });
-  
-  // If in others mode, check if file is uploaded
-  if (mode === 'others' && fileInput.files[0]) {
-    updateSubmitState();
-  } else if (mode === 'main') {
-    updateSubmitState();
-  }
-  
-  updateSubmitState();
-}
-
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
 const fileName     = document.getElementById('file-name');
@@ -402,13 +353,8 @@ const errorBox     = document.getElementById('error-box');
 const dlLink       = document.getElementById('dl-link');
 
 function updateSubmitState() {
-  if (currentMode === 'main') {
-    submitBtn.disabled = !(fileInput.files[0] && sheetSelect.value);
-  } else {
-    // Check at least one template is selected
-    const checked = document.querySelectorAll('input[name="others_templates"]:checked');
-    submitBtn.disabled = !(fileInput.files[0] && checked.length > 0);
-  }
+  const checked = document.querySelectorAll('input[name="cert_templates"]:checked');
+  submitBtn.disabled = !(fileInput.files[0] && sheetSelect.value && checked.length > 0);
 }
 
 // Update checkbox styling
@@ -417,7 +363,6 @@ document.querySelectorAll('.template-options input[type="checkbox"]').forEach(cb
     this.closest('label').classList.toggle('checked', this.checked);
     updateSubmitState();
   });
-  // Set initial state
   if (cb.checked) cb.closest('label').classList.add('checked');
 });
 
@@ -453,11 +398,7 @@ sheetSelect.addEventListener('change', updateSubmitState);
 fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) {
     fileName.textContent = '📄 ' + fileInput.files[0].name;
-    if (currentMode === 'main') {
-      loadSheets(fileInput.files[0]);
-    } else {
-      updateSubmitState();
-    }
+    loadSheets(fileInput.files[0]);
   } else {
     fileName.textContent = '';
     updateSubmitState();
@@ -475,11 +416,7 @@ dropZone.addEventListener('drop', ev => {
   if (f) {
     fileInput.files = ev.dataTransfer.files;
     fileName.textContent = '📄 ' + f.name;
-    if (currentMode === 'main') {
-      loadSheets(f);
-    } else {
-      updateSubmitState();
-    }
+    loadSheets(f);
   }
 });
 
@@ -523,6 +460,16 @@ updateSubmitState();
 </html>
 """
 
+# Substitute the actual on-disk template filenames into the checkbox values.
+# Done this way (instead of f-string on the whole HTML) so the literal
+# curly braces used elsewhere in the <style> block don't need escaping.
+HTML = (
+    HTML.replace("__VET_FILE__", VET_TEMPLATE_FILE)
+        .replace("__JOB_SHADOWING_FILE__", JOB_SHADOWING_FILE)
+        .replace("__PORTUGUESE_FILE__", PORTUGUESE_FILE)
+        .replace("__TEACHERS_FILE__", TEACHERS_FILE)
+)
+
 # Column name candidates, ordered so more specific names are tried first
 # where two columns could both match (e.g. "Sector" vs "Sector Database").
 COL_MAP = {
@@ -548,6 +495,8 @@ COL_MAP = {
     'languages': ['languages', 'idiomas', 'language'],
     'allergies': ['allergies', 'alergies', 'allergens', 'alergias'],
     'experience': ['experience', 'experiencia', 'work experience'],
+    'expectation': ['expectation', 'expectations', 'expectativas'],
+    'working_hours': ['working hours', 'work hours', 'schedule', 'horario'],
     'vat': ['vat', 'nif', 'tax id', 'vat number'],
     'pic': ['pic', 'participant identification code'],
     'oid': ['oid', 'organisation id'],
@@ -664,7 +613,9 @@ def match_column(df_columns, possible):
 
 
 def extract_student_data(df):
-    """Extract student data from a dataframe with various column name variations."""
+    """Extract student/group-row data from a dataframe with various column
+    name variations. Works for any cohort sheet, regardless of which
+    certificate type(s) will eventually be generated from it."""
     students = []
 
     actual_cols = {}
@@ -712,121 +663,18 @@ def extract_student_data(df):
 
         for key in ['birth_date', 'start_date', 'end_date', 'sector', 'company', 'company_address',
                     'tutor', 'telephone', 'email', 'project_code', 'notes', 'dress_code', 'pickup',
-                    'presentation', 'age', 'languages', 'allergies', 'experience', 'vat', 'pic',
-                    'oid', 'website']:
+                    'presentation', 'age', 'languages', 'allergies', 'experience', 'expectation',
+                    'working_hours', 'vat', 'pic', 'oid', 'website']:
             student.setdefault(key, '')
+
+        # SECTOR_DATABASE is used by a couple of templates as a distinct
+        # placeholder from SECTOR - fall back to the same value if no
+        # separate "Sector Database" column was found.
+        student.setdefault('sector_database', student.get('sector', ''))
 
         students.append(student)
 
     return students
-
-
-def extract_student_data_others(df):
-    """Extract student data from OTHERS DATABASE sheet."""
-    students = []
-    professors = []
-    
-    # Column mapping for OTHERS DATABASE
-    col_map_others = {
-        'name': ['name', 'first name', 'nome'],
-        'surname': ['surname', 'last name', 'apellido', 'sobrenome'],
-        'age': ['age', 'idade', 'edad'],
-        'sector': ['sector', 'area', 'field', 'study course'],
-        'sector_database': ['sector database', 'sector'],
-        'experience': ['experience', 'experiencia', 'work experience'],
-        'expectation': ['expectation', 'expectations', 'expectativas'],
-        'languages': ['languages', 'idiomas', 'language'],
-        'allergies': ['allergies', 'alergies', 'allergens', 'alergias'],
-        'company': ['company', 'host org', 'host organisation', 'organization', 'empresa'],
-        'company_address': ['address', 'company address', 'host address', 'endereco', 'direccion'],
-        'tutor': ['tutor', 'supervisor', 'mentor', 'contact'],
-        'telephone': ['telephone', 'phone', 'contact number', 'tel', 'telefone'],
-        'email': ['email', 'e-mail', 'mail', 'correo'],
-        'vat': ['vat', 'nif', 'tax id', 'vat number'],
-        'pic': ['pic', 'participant identification code'],
-        'oid': ['oid', 'organisation id'],
-        'website': ['website', 'web', 'site', 'pagina web'],
-        'dress_code': ['dress code', 'uniform', 'attire'],
-        'working_hours': ['working hours', 'work hours', 'schedule', 'horario'],
-        'feedback': ['feedback', 'comments', 'observations', 'comentarios', 'notes'],
-        'birth_date': ['date of birth', 'birth date', 'birthday', 'birth_date', 'dob'],
-        'start_date': ['start date', 'start', 'begin', 'begin date'],
-        'end_date': ['end date', 'end', 'finish', 'finish date'],
-        'project_code': ['project code', 'project id', 'project number', 'projeto'],
-        'professors': ['professors', 'professor', 'teachers', 'teacher'],
-    }
-    
-    actual_cols = {}
-    for standard, possible in col_map_others.items():
-        col = match_column(df.columns, possible)
-        if col is not None:
-            actual_cols[standard] = col
-    
-    name_col = actual_cols.get('name', 'name')
-    surname_col = actual_cols.get('surname', 'surname')
-    professors_col = actual_cols.get('professors', 'professors')
-    
-    for idx, row in df.iterrows():
-        # Check if this is a professor row
-        is_professor = False
-        professor_name = ''
-        if professors_col in df.columns:
-            prof_val = str(row.get(professors_col, '')).strip()
-            if prof_val and prof_val.lower() != 'nan':
-                is_professor = True
-                professor_name = prof_val
-        
-        # Get student name
-        first_name = str(row.get(name_col, '')).strip() if name_col in df.columns else ''
-        surname = str(row.get(surname_col, '')).strip() if surname_col in df.columns else ''
-        
-        if (not first_name or first_name.lower() == 'nan') and (not surname or surname.lower() == 'nan'):
-            continue
-        
-        student = {}
-        
-        if first_name and first_name.lower() != 'nan':
-            if surname and surname.lower() != 'nan':
-                student['name'] = f"{first_name} {surname}"
-            else:
-                student['name'] = first_name
-        elif surname and surname.lower() != 'nan':
-            student['name'] = surname
-        else:
-            continue
-        
-        for standard, col in actual_cols.items():
-            if standard not in ['name', 'surname', 'professors']:
-                if col in df.columns:
-                    val = row.get(col, '')
-                    if pd.isna(val):
-                        val = ''
-                    elif isinstance(val, (pd.Timestamp, datetime)):
-                        val = val.strftime('%d/%m/%Y')
-                    student[standard] = str(val).strip()
-                else:
-                    student[standard] = ''
-        
-        for key in ['birth_date', 'start_date', 'end_date', 'sector', 'sector_database', 
-                    'company', 'company_address', 'tutor', 'telephone', 'email', 
-                    'project_code', 'dress_code', 'working_hours', 'feedback',
-                    'age', 'languages', 'allergies', 'experience', 'vat', 'pic', 
-                    'oid', 'website', 'expectation']:
-            student.setdefault(key, '')
-        
-        if not student.get('sector_database') and student.get('sector'):
-            student['sector_database'] = student['sector']
-        
-        if is_professor and professor_name:
-            # This is a professor - create a separate professor entry
-            professor_entry = student.copy()
-            professor_entry['name'] = professor_name
-            professors.append(professor_entry)
-        else:
-            # This is a student
-            students.append(student)
-    
-    return students, professors
 
 
 # Sheet names that are never cohorts of students - reused by both the
@@ -849,9 +697,8 @@ def is_cohort_sheet(sheet_name):
 
 
 def list_templates():
-    """Scan the templates/ folder for .docx files so the dropdown always
-    reflects what's actually on disk. To add a 5th template later, just
-    drop a new .docx file in templates/ - no code change needed."""
+    """Scan the templates/ folder for .docx files so we can validate that
+    whatever the frontend submits actually exists on disk."""
     try:
         files = sorted(f for f in os.listdir(TEMPLATES_FOLDER) if f.lower().endswith('.docx'))
     except FileNotFoundError:
@@ -906,452 +753,236 @@ def generate_certificates():
     if excel_file.filename == "":
         return jsonify({"error": "No file selected."}), 400
 
-    mode = request.form.get('mode', 'main')
-    
-    # --- MAIN MODE: Original functionality with certificate_template only ---
-    if mode == 'main':
-        sheet_name_filter = request.form.get('sheet_name', '').strip()
-        if not sheet_name_filter:
-            return jsonify({"error": "Please choose a group/sheet to generate certificates for."}), 400
+    sheet_name_filter = request.form.get('sheet_name', '').strip()
+    if not sheet_name_filter:
+        return jsonify({"error": "Please choose a group/sheet to generate certificates for."}), 400
 
-        # Always use certificate_template.docx for main mode
-        selected_template_path = os.path.join(TEMPLATES_FOLDER, "certificate_template.docx")
-        if not os.path.exists(selected_template_path):
-            return jsonify({"error": "certificate_template.docx not found in templates folder."}), 400
+    selected_templates = request.form.getlist("cert_templates")
+    if not selected_templates:
+        return jsonify({"error": "Please select at least one certificate type."}), 400
 
-        excel_path = save_upload(excel_file)
+    # Validate every selected template actually exists on disk.
+    available_templates = {t['file'] for t in list_templates()}
+    for t in selected_templates:
+        if t not in available_templates:
+            return jsonify({"error": f"Template '{t}' not found in templates folder."}), 400
 
-        try:
-            xl = pd.ExcelFile(excel_path)
-            all_students = []
+    excel_path = save_upload(excel_file)
 
-            for sheet_name in xl.sheet_names:
-                if sheet_name.lower() != sheet_name_filter.lower():
-                    continue
-                if not is_cohort_sheet(sheet_name):
-                    continue
+    try:
+        xl = pd.ExcelFile(excel_path)
+        all_students = []
 
-                try:
-                    header_row_idx = find_header_row(excel_path, sheet_name)
-                    if header_row_idx is None:
-                        continue
+        for sheet_name in xl.sheet_names:
+            if sheet_name.lower() != sheet_name_filter.lower():
+                continue
+            if not is_cohort_sheet(sheet_name):
+                continue
 
-                    df = pd.read_excel(excel_path, sheet_name=sheet_name, header=header_row_idx)
-                    df.columns = [str(col).strip() for col in df.columns]
-
-                    if len(df) == 0:
-                        continue
-
-                    has_name = any('name' in str(col).lower() or 'surname' in str(col).lower() for col in df.columns)
-                    has_sector = any('sector' in str(col).lower() or 'study' in str(col).lower() for col in df.columns)
-
-                    if not (has_name or has_sector):
-                        continue
-
-                    sheet_meta = extract_sheet_metadata(excel_path, sheet_name, header_row_idx)
-
-                    students = extract_student_data(df)
-                    for s in students:
-                        s['sheet_name'] = sheet_name
-                        if not s.get('start_date') and sheet_meta['start_date']:
-                            s['start_date'] = sheet_meta['start_date']
-                        if not s.get('end_date') and sheet_meta['end_date']:
-                            s['end_date'] = sheet_meta['end_date']
-                        if not s.get('project_code') and sheet_meta['project_code']:
-                            s['project_code'] = sheet_meta['project_code']
-                    all_students.extend(students)
-                except Exception as e:
-                    print(f"Error processing sheet {sheet_name}: {e}")
-                    continue
-
-            if not all_students:
-                return jsonify({"error": f"No student data found in sheet '{sheet_name_filter}'. Make sure it has columns like 'Name' or 'Surname'."}), 400
-
-            sector_map = {}
             try:
-                task_sheet_names = ['Task Database', 'TASK DATABASE', 'Task database', 'tasks', 'Sectors']
-                task_df = None
-                for name in task_sheet_names:
-                    if name not in xl.sheet_names:
-                        continue
-                    try:
-                        task_header_idx = find_header_row(
-                            excel_path, name,
-                            markers=['sector', 'detailed', 'task', 'competence', 'knowledge'],
-                            min_matches=2,
-                        )
-                        if task_header_idx is None:
-                            task_header_idx = 0
-                        task_df = pd.read_excel(excel_path, sheet_name=name, header=task_header_idx)
-                        break
-                    except Exception:
-                        continue
+                header_row_idx = find_header_row(excel_path, sheet_name)
+                if header_row_idx is None:
+                    continue
 
-                if task_df is not None:
-                    task_df.columns = [str(col).strip() for col in task_df.columns]
+                df = pd.read_excel(excel_path, sheet_name=sheet_name, header=header_row_idx)
+                df.columns = [str(col).strip() for col in df.columns]
 
-                    sector_col = None
-                    tasks_col = None
-                    competences_col = None
+                if len(df) == 0:
+                    continue
 
-                    for col in task_df.columns:
-                        col_lower = col.lower()
-                        if 'sector' in col_lower:
-                            sector_col = col
-                        elif 'detailed' in col_lower or 'task' in col_lower or 'Detailed tasks' in col:
-                            tasks_col = col
-                        elif 'job' in col_lower or 'competence' in col_lower or 'knowledge' in col_lower or 'Job-related' in col:
-                            competences_col = col
+                has_name = any('name' in str(col).lower() or 'surname' in str(col).lower() for col in df.columns)
+                has_sector = any('sector' in str(col).lower() or 'study' in str(col).lower() for col in df.columns)
 
-                    if sector_col and tasks_col:
-                        for _, row in task_df.iterrows():
-                            sector = str(row.get(sector_col, "")).strip()
-                            if sector and sector.lower() != "nan":
-                                sector_key = normalize_sector(sector)
-                                sector_map[sector_key] = {
-                                    "detailed_tasks": str(row.get(tasks_col, "") or ""),
-                                    "job_related_competences": str(row.get(competences_col, "") or "") if competences_col else "",
-                                }
-            except Exception:
-                pass
+                if not (has_name or has_sector):
+                    continue
 
-        except Exception as e:
-            return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+                sheet_meta = extract_sheet_metadata(excel_path, sheet_name, header_row_idx)
 
-        # The spreadsheet itself isn't needed past this point (we now have
-        # all_students / sector_map in memory) - remove it so uploaded
-        # student data doesn't pile up on disk.
+                students = extract_student_data(df)
+                for s in students:
+                    s['sheet_name'] = sheet_name
+                    if not s.get('start_date') and sheet_meta['start_date']:
+                        s['start_date'] = sheet_meta['start_date']
+                    if not s.get('end_date') and sheet_meta['end_date']:
+                        s['end_date'] = sheet_meta['end_date']
+                    if not s.get('project_code') and sheet_meta['project_code']:
+                        s['project_code'] = sheet_meta['project_code']
+                all_students.extend(students)
+            except Exception as e:
+                print(f"Error processing sheet {sheet_name}: {e}")
+                continue
+
+        if not all_students:
+            return jsonify({"error": f"No student data found in sheet '{sheet_name_filter}'. Make sure it has columns like 'Name' or 'Surname'."}), 400
+
+        # Build a sector -> {detailed_tasks, job_related_competences} map
+        # from the Task Database sheet, used for the VET certificate.
+        sector_map = {}
         try:
-            os.remove(excel_path)
+            task_sheet_names = ['Task Database', 'TASK DATABASE', 'Task database', 'tasks', 'Sectors']
+            task_df = None
+            for name in task_sheet_names:
+                if name not in xl.sheet_names:
+                    continue
+                try:
+                    task_header_idx = find_header_row(
+                        excel_path, name,
+                        markers=['sector', 'detailed', 'task', 'competence', 'knowledge'],
+                        min_matches=2,
+                    )
+                    if task_header_idx is None:
+                        task_header_idx = 0
+                    task_df = pd.read_excel(excel_path, sheet_name=name, header=task_header_idx)
+                    break
+                except Exception:
+                    continue
+
+            if task_df is not None:
+                task_df.columns = [str(col).strip() for col in task_df.columns]
+
+                sector_col = None
+                tasks_col = None
+                competences_col = None
+
+                for col in task_df.columns:
+                    col_lower = col.lower()
+                    if 'sector' in col_lower:
+                        sector_col = col
+                    elif 'detailed' in col_lower or 'task' in col_lower or 'Detailed tasks' in col:
+                        tasks_col = col
+                    elif 'job' in col_lower or 'competence' in col_lower or 'knowledge' in col_lower or 'Job-related' in col:
+                        competences_col = col
+
+                if sector_col and tasks_col:
+                    for _, row in task_df.iterrows():
+                        sector = str(row.get(sector_col, "")).strip()
+                        if sector and sector.lower() != "nan":
+                            sector_key = normalize_sector(sector)
+                            sector_map[sector_key] = {
+                                "detailed_tasks": str(row.get(tasks_col, "") or ""),
+                                "job_related_competences": str(row.get(competences_col, "") or "") if competences_col else "",
+                            }
         except Exception:
             pass
 
-        generated_files = []
-        errors = []
-        processed_count = 0
+    except Exception as e:
+        return jsonify({"error": f"Could not read Excel file: {e}"}), 400
 
-        for student in all_students:
-            try:
-                notes = student.get('notes', '').lower()
-                experience = student.get('experience', '').lower()
-                if 'will not come' in notes or "didn't show up" in notes or 'will not come' in experience or "didn't show up" in experience:
-                    continue
+    # The spreadsheet itself isn't needed past this point (we now have
+    # all_students / sector_map in memory) - remove it so uploaded
+    # student data doesn't pile up on disk.
+    try:
+        os.remove(excel_path)
+    except Exception:
+        pass
 
-                ctx = {
-                    "NAME": student.get('name', ''),
-                    "BIRTH_DATE": student.get('birth_date', ''),
-                    "START": student.get('start_date', ''),
-                    "END": student.get('end_date', ''),
-                    "SECTOR": student.get('sector', ''),
-                    "HOST_ORG": student.get('company', ''),
-                    "HOST_ORG_ADDRESS": student.get('company_address', ''),
-                    "PROJECT_CODE": student.get('project_code', ''),
-                    "TUTOR": student.get('tutor', ''),
-                    "TELEPHONE": student.get('telephone', ''),
-                    "EMAIL": student.get('email', ''),
-                    "NOTES": student.get('notes', ''),
-                    "DRESS_CODE": student.get('dress_code', ''),
-                    "PICKUP": student.get('pickup', ''),
-                    "PRESENTATION": student.get('presentation', ''),
-                    "AGE": student.get('age', ''),
-                    "LANGUAGES": student.get('languages', ''),
-                    "ALLERGIES": student.get('allergies', ''),
-                    "EXPERIENCE": student.get('experience', ''),
-                    "VAT": student.get('vat', ''),
-                    "PIC": student.get('pic', ''),
-                    "OID": student.get('oid', ''),
-                    "WEBSITE": student.get('website', ''),
-                    "SHEET_NAME": student.get('sheet_name', ''),
-                    "detailed_tasks": "",
-                    "job_related_competences": "",
-                }
+    generated_files = []
+    errors = []
 
-                sector_key = normalize_sector(ctx["SECTOR"])
-                if sector_key in sector_map:
-                    ctx["detailed_tasks"] = sector_map[sector_key].get("detailed_tasks", "")
-                    ctx["job_related_competences"] = sector_map[sector_key].get("job_related_competences", "")
-                else:
-                    for key in sector_map:
-                        if key in sector_key or sector_key in key:
-                            ctx["detailed_tasks"] = sector_map[key].get("detailed_tasks", "")
-                            ctx["job_related_competences"] = sector_map[key].get("job_related_competences", "")
-                            break
+    for student in all_students:
+        try:
+            notes = student.get('notes', '').lower()
+            experience = student.get('experience', '').lower()
+            if 'will not come' in notes or "didn't show up" in notes or 'will not come' in experience or "didn't show up" in experience:
+                continue
 
-                doc = DocxTemplate(selected_template_path)
+            sector_key = normalize_sector(student.get('sector', ''))
+            is_school = sector_key == 'school'
+
+            # School-sector rows ONLY ever get the Teachers certificate.
+            # Everyone else gets whichever non-Teachers templates were
+            # checked. Selecting "Teachers" only produces output for rows
+            # where Sector = School in the chosen group.
+            if is_school:
+                templates_for_row = [t for t in selected_templates if t == TEACHERS_FILE]
+            else:
+                templates_for_row = [t for t in selected_templates if t != TEACHERS_FILE]
+
+            if not templates_for_row:
+                continue
+
+            ctx = {
+                "NAME": student.get('name', ''),
+                "BIRTH_DATE": student.get('birth_date', ''),
+                "START": student.get('start_date', ''),
+                "END": student.get('end_date', ''),
+                "SECTOR": student.get('sector', ''),
+                "SECTOR_DATABASE": student.get('sector_database', ''),
+                "HOST_ORG": student.get('company', ''),
+                "HOST_ORG_ADDRESS": student.get('company_address', ''),
+                "PROJECT_CODE": student.get('project_code', ''),
+                "TUTOR": student.get('tutor', ''),
+                "TELEPHONE": student.get('telephone', ''),
+                "EMAIL": student.get('email', ''),
+                "NOTES": student.get('notes', ''),
+                "DRESS_CODE": student.get('dress_code', ''),
+                "PICKUP": student.get('pickup', ''),
+                "PRESENTATION": student.get('presentation', ''),
+                "WORKING_HOURS": student.get('working_hours', ''),
+                "AGE": student.get('age', ''),
+                "LANGUAGES": student.get('languages', ''),
+                "ALLERGIES": student.get('allergies', ''),
+                "EXPERIENCE": student.get('experience', ''),
+                "EXPECTATION": student.get('expectation', ''),
+                "VAT": student.get('vat', ''),
+                "PIC": student.get('pic', ''),
+                "OID": student.get('oid', ''),
+                "WEBSITE": student.get('website', ''),
+                "SHEET_NAME": student.get('sheet_name', ''),
+                "detailed_tasks": "",
+                "job_related_competences": "",
+            }
+
+            if sector_key in sector_map:
+                ctx["detailed_tasks"] = sector_map[sector_key].get("detailed_tasks", "")
+                ctx["job_related_competences"] = sector_map[sector_key].get("job_related_competences", "")
+            else:
+                for key in sector_map:
+                    if key in sector_key or sector_key in key:
+                        ctx["detailed_tasks"] = sector_map[key].get("detailed_tasks", "")
+                        ctx["job_related_competences"] = sector_map[key].get("job_related_competences", "")
+                        break
+
+            safe_name = re.sub(r'[^\w\s-]', '', student.get('name', 'student'))
+            safe_name = re.sub(r'[-\s]+', '_', safe_name)
+
+            for template_file in templates_for_row:
+                template_path = os.path.join(TEMPLATES_FOLDER, template_file)
+                doc = DocxTemplate(template_path)
                 doc.render(ctx)
-
-                safe_name = re.sub(r'[^\w\s-]', '', student.get('name', 'student'))
-                safe_name = re.sub(r'[-\s]+', '_', safe_name)
-                out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}.docx")
+                suffix = TEMPLATE_SUFFIX.get(template_file, os.path.splitext(template_file)[0])
+                out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_{suffix}.docx")
                 doc.save(out_path)
                 generated_files.append(out_path)
-                processed_count += 1
 
-            except Exception as e:
-                errors.append(f"Error processing {student.get('name', 'Unknown')}: {str(e)}")
-
-        if not generated_files:
-            error_msg = "No certificates generated."
-            if errors:
-                error_msg += " Errors: " + "; ".join(errors[:3])
-            error_msg += f" No students with valid data found in '{sheet_name_filter}'."
-            return jsonify({"error": error_msg}), 400
-
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in generated_files:
-                zf.write(f, os.path.basename(f))
-        zip_buffer.seek(0)
-
-        for f in generated_files:
-            try:
-                os.remove(f)
-            except Exception:
-                pass
-
-        return send_file(
-            zip_buffer,
-            as_attachment=True,
-            download_name="certificates.zip",
-            mimetype="application/zip"
-        )
-
-    # --- OTHERS MODE: Process only OTHERS DATABASE with 3 templates ---
-    elif mode == 'others':
-        others_templates = request.form.getlist("others_templates")
-        if not others_templates:
-            return jsonify({"error": "Please select at least one certificate type."}), 400
-        
-        # Validate templates exist
-        available_templates = {t['file'] for t in list_templates()}
-        for t in others_templates:
-            if t not in available_templates:
-                return jsonify({"error": f"Template '{t}' not found."}), 400
-        
-        excel_path = save_upload(excel_file)
-        
-        try:
-            xl = pd.ExcelFile(excel_path)
-            
-            # Find OTHERS DATABASE sheet
-            others_sheet = None
-            for sheet_name in xl.sheet_names:
-                if sheet_name.lower() == 'others database':
-                    others_sheet = sheet_name
-                    break
-            
-            if not others_sheet:
-                return jsonify({"error": "Could not find 'OTHERS DATABASE' sheet in the Excel file."}), 400
-            
-            # Extract data from OTHERS DATABASE
-            header_row_idx = find_header_row(excel_path, others_sheet)
-            if header_row_idx is None:
-                header_row_idx = 0
-            
-            df = pd.read_excel(excel_path, sheet_name=others_sheet, header=header_row_idx)
-            df.columns = [str(col).strip() for col in df.columns]
-            
-            if len(df) == 0:
-                return jsonify({"error": "No data found in OTHERS DATABASE sheet."}), 400
-            
-            students, professors = extract_student_data_others(df)
-            
-            if not students and not professors:
-                return jsonify({"error": "No valid student or professor data found in OTHERS DATABASE sheet."}), 400
-            
-            # Extract metadata (project code, date range)
-            sheet_meta = {'start_date': '', 'end_date': '', 'project_code': ''}
-            try:
-                wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
-                ws = wb[others_sheet]
-                for row in ws.iter_rows(min_row=1, max_row=min(header_row_idx + 2, 20)):
-                    for cell in row:
-                        if cell.value is None:
-                            continue
-                        text = str(cell.value)
-                        date_match = DATE_RANGE_RE.search(text)
-                        if date_match:
-                            if not sheet_meta['start_date']:
-                                sheet_meta['start_date'] = date_match.group(1)
-                                sheet_meta['end_date'] = date_match.group(2)
-                        code_match = PROJECT_CODE_RE.search(text)
-                        if code_match:
-                            if not sheet_meta['project_code']:
-                                sheet_meta['project_code'] = code_match.group(0)
-                wb.close()
-            except Exception:
-                pass
-            
-            # Apply metadata to students
-            for s in students:
-                if not s.get('start_date') and sheet_meta['start_date']:
-                    s['start_date'] = sheet_meta['start_date']
-                if not s.get('end_date') and sheet_meta['end_date']:
-                    s['end_date'] = sheet_meta['end_date']
-                if not s.get('project_code') and sheet_meta['project_code']:
-                    s['project_code'] = sheet_meta['project_code']
-            
-            # Apply metadata to professors
-            for p in professors:
-                if not p.get('start_date') and sheet_meta['start_date']:
-                    p['start_date'] = sheet_meta['start_date']
-                if not p.get('end_date') and sheet_meta['end_date']:
-                    p['end_date'] = sheet_meta['end_date']
-                if not p.get('project_code') and sheet_meta['project_code']:
-                    p['project_code'] = sheet_meta['project_code']
-            
         except Exception as e:
-            return jsonify({"error": f"Could not read Excel file: {e}"}), 400
-        
-        # Spreadsheet has been fully parsed into students/professors - remove
-        # it so uploaded data doesn't pile up on disk.
+            errors.append(f"Error processing {student.get('name', 'Unknown')}: {str(e)}")
+
+    if not generated_files:
+        error_msg = "No certificates generated."
+        if errors:
+            error_msg += " Errors: " + "; ".join(errors[:3])
+        error_msg += f" No matching rows found in '{sheet_name_filter}' for the selected certificate type(s)."
+        return jsonify({"error": error_msg}), 400
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in generated_files:
+            zf.write(f, os.path.basename(f))
+    zip_buffer.seek(0)
+
+    for f in generated_files:
         try:
-            os.remove(excel_path)
+            os.remove(f)
         except Exception:
             pass
-        
-        generated_files = []
-        errors = []
-        
-        # Determine which templates to use
-        use_job_shadowing = 'Job_Shadowing_Certificates.docx' in others_templates
-        use_portuguese = 'Portuguese_certificate_Template.docx' in others_templates
-        use_teachers = 'teachers_CERTIFICATES .docx' in others_templates
-        
-        # Process students (get Job Shadowing and Portuguese)
-        for student in students:
-            try:
-                # Skip students marked as not coming
-                experience = student.get('experience', '').lower()
-                notes = student.get('feedback', '').lower()
-                if 'will not come' in experience or "didn't show up" in experience or 'will not come' in notes or "didn't show up" in notes:
-                    continue
-                
-                ctx = {
-                    "NAME": student.get('name', ''),
-                    "BIRTH_DATE": student.get('birth_date', ''),
-                    "START": student.get('start_date', ''),
-                    "END": student.get('end_date', ''),
-                    "SECTOR": student.get('sector', ''),
-                    "SECTOR_DATABASE": student.get('sector_database', ''),
-                    "HOST_ORG": student.get('company', ''),
-                    "HOST_ORG_ADDRESS": student.get('company_address', ''),
-                    "PROJECT_CODE": student.get('project_code', ''),
-                    "TUTOR": student.get('tutor', ''),
-                    "TELEPHONE": student.get('telephone', ''),
-                    "EMAIL": student.get('email', ''),
-                    "NOTES": student.get('feedback', ''),
-                    "DRESS_CODE": student.get('dress_code', ''),
-                    "WORKING_HOURS": student.get('working_hours', ''),
-                    "AGE": student.get('age', ''),
-                    "LANGUAGES": student.get('languages', ''),
-                    "ALLERGIES": student.get('allergies', ''),
-                    "EXPERIENCE": student.get('experience', ''),
-                    "EXPECTATION": student.get('expectation', ''),
-                    "VAT": student.get('vat', ''),
-                    "PIC": student.get('pic', ''),
-                    "OID": student.get('oid', ''),
-                    "WEBSITE": student.get('website', ''),
-                }
-                
-                student_name = student.get('name', 'student')
-                safe_name = re.sub(r'[^\w\s-]', '', student_name)
-                safe_name = re.sub(r'[-\s]+', '_', safe_name)
-                
-                # Generate Job Shadowing certificate
-                if use_job_shadowing:
-                    template_path = os.path.join(TEMPLATES_FOLDER, "Job_Shadowing_Certificates.docx")
-                    doc = DocxTemplate(template_path)
-                    doc.render(ctx)
-                    out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_Job_Shadowing.docx")
-                    doc.save(out_path)
-                    generated_files.append(out_path)
-                
-                # Generate Portuguese Language certificate
-                if use_portuguese:
-                    template_path = os.path.join(TEMPLATES_FOLDER, "Portuguese_certificate_Template.docx")
-                    doc = DocxTemplate(template_path)
-                    doc.render(ctx)
-                    out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_Portuguese_Language.docx")
-                    doc.save(out_path)
-                    generated_files.append(out_path)
-                
-            except Exception as e:
-                errors.append(f"Error processing student {student.get('name', 'Unknown')}: {str(e)}")
-        
-        # Process professors (get Teachers Certificate)
-        for professor in professors:
-            try:
-                ctx = {
-                    "NAME": professor.get('name', ''),
-                    "BIRTH_DATE": professor.get('birth_date', ''),
-                    "START": professor.get('start_date', ''),
-                    "END": professor.get('end_date', ''),
-                    "SECTOR": professor.get('sector', ''),
-                    "SECTOR_DATABASE": professor.get('sector_database', ''),
-                    "HOST_ORG": professor.get('company', ''),
-                    "HOST_ORG_ADDRESS": professor.get('company_address', ''),
-                    "PROJECT_CODE": professor.get('project_code', ''),
-                    "TUTOR": professor.get('tutor', ''),
-                    "TELEPHONE": professor.get('telephone', ''),
-                    "EMAIL": professor.get('email', ''),
-                    "NOTES": professor.get('feedback', ''),
-                    "DRESS_CODE": professor.get('dress_code', ''),
-                    "WORKING_HOURS": professor.get('working_hours', ''),
-                    "AGE": professor.get('age', ''),
-                    "LANGUAGES": professor.get('languages', ''),
-                    "ALLERGIES": professor.get('allergies', ''),
-                    "EXPERIENCE": professor.get('experience', ''),
-                    "EXPECTATION": professor.get('expectation', ''),
-                    "VAT": professor.get('vat', ''),
-                    "PIC": professor.get('pic', ''),
-                    "OID": professor.get('oid', ''),
-                    "WEBSITE": professor.get('website', ''),
-                }
-                
-                prof_name = professor.get('name', 'professor')
-                safe_name = re.sub(r'[^\w\s-]', '', prof_name)
-                safe_name = re.sub(r'[-\s]+', '_', safe_name)
-                
-                # Generate Teachers Certificate
-                if use_teachers:
-                    template_path = os.path.join(TEMPLATES_FOLDER, "teachers_CERTIFICATES .docx")
-                    doc = DocxTemplate(template_path)
-                    doc.render(ctx)
-                    out_path = os.path.join(OUTPUT_FOLDER, f"{safe_name}_Teachers_Certificate.docx")
-                    doc.save(out_path)
-                    generated_files.append(out_path)
-                
-            except Exception as e:
-                errors.append(f"Error processing professor {professor.get('name', 'Unknown')}: {str(e)}")
-        
-        if not generated_files:
-            error_msg = "No certificates generated."
-            if errors:
-                error_msg += " Errors: " + "; ".join(errors[:3])
-            return jsonify({"error": error_msg}), 400
-        
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in generated_files:
-                zf.write(f, os.path.basename(f))
-        zip_buffer.seek(0)
-        
-        for f in generated_files:
-            try:
-                os.remove(f)
-            except Exception:
-                pass
-        
-        return send_file(
-            zip_buffer,
-            as_attachment=True,
-            download_name="certificates.zip",
-            mimetype="application/zip"
-        )
-    
-    else:
-        return jsonify({"error": "Invalid mode selected."}), 400
+
+    return send_file(
+        zip_buffer,
+        as_attachment=True,
+        download_name="certificates.zip",
+        mimetype="application/zip"
+    )
 
 
 if __name__ == "__main__":
