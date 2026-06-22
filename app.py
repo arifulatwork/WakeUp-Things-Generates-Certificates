@@ -9,9 +9,19 @@ import zipfile
 import io
 import re
 from datetime import datetime
-from docx2pdf import convert
 import tempfile
 import subprocess
+import threading
+
+# Word COM automation (Windows + Microsoft Word required). This replaces the
+# old LibreOffice/docx2pdf combo with a hardened direct call that won't hang
+# on stray Word instances or hidden dialog boxes.
+try:
+    import pythoncom
+    import win32com.client
+    HAVE_WIN32COM = True
+except ImportError:
+    HAVE_WIN32COM = False
 
 app = Flask(__name__)
 
@@ -57,34 +67,78 @@ def save_upload(file_storage):
     return path
 
 
-def convert_docx_to_pdf(docx_path, pdf_path):
-    """Convert a DOCX file to PDF using LibreOffice (headless)."""
+def kill_word_processes():
+    """Force-kill any lingering WINWORD.EXE so a stuck instance from a
+    previous failed conversion can't block new ones from working."""
     try:
-        # Try using LibreOffice first (most reliable on servers)
-        subprocess.run([
-            'libreoffice',
-            '--headless',
-            '--convert-to', 'pdf',
-            '--outdir', os.path.dirname(pdf_path),
-            docx_path
-        ], check=True, capture_output=True)
-        
-        # The output file will be named the same as input but with .pdf extension
-        generated_pdf = os.path.splitext(docx_path)[0] + '.pdf'
-        if os.path.exists(generated_pdf):
-            os.rename(generated_pdf, pdf_path)
-            return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    
-    try:
-        # Fallback to docx2pdf (works on Windows with Word installed)
-        convert(docx_path, pdf_path)
-        return True
+        subprocess.run(
+            ['taskkill', '/F', '/IM', 'WINWORD.EXE'],
+            capture_output=True
+        )
     except Exception:
         pass
-    
-    return False
+
+
+def _word_convert_worker(docx_path, pdf_path, result):
+    """Runs in its own thread so COM gets its own apartment, and so the
+    caller can enforce a timeout if Word hangs (e.g. on a hidden dialog)."""
+    pythoncom.CoInitialize()
+    word = None
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0  # wdAlertsNone - suppress popup dialogs
+        doc = word.Documents.Open(
+            os.path.abspath(docx_path),
+            ReadOnly=True,
+            ConfirmConversions=False,
+            AddToRecentFiles=False,
+        )
+        doc.SaveAs(os.path.abspath(pdf_path), FileFormat=17)  # wdFormatPDF
+        doc.Close(False)
+        result['ok'] = True
+    except Exception as e:
+        result['error'] = str(e)
+    finally:
+        try:
+            if word is not None:
+                word.Quit()
+        except Exception:
+            pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
+def convert_docx_to_pdf(docx_path, pdf_path, timeout=60):
+    """Convert a DOCX file to PDF via Word COM automation.
+
+    Hardened against the common Windows failure modes: stray WINWORD.EXE
+    processes left over from a previous run, and silent hidden dialogs that
+    would otherwise hang the whole batch forever.
+    """
+    if not HAVE_WIN32COM:
+        return False
+
+    kill_word_processes()
+
+    result = {}
+    t = threading.Thread(
+        target=_word_convert_worker,
+        args=(docx_path, pdf_path, result),
+        daemon=True,
+    )
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        # Word is stuck (likely a hidden dialog or COM deadlock). Kill it
+        # and report failure rather than hanging the request forever.
+        kill_word_processes()
+        return False
+
+    return result.get('ok', False) and os.path.exists(pdf_path)
 
 
 def merge_pdfs(pdf_paths, output_path):
