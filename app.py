@@ -12,6 +12,7 @@ import shutil
 from datetime import datetime
 import tempfile
 import subprocess
+import sys
 
 app = Flask(__name__)
 
@@ -90,15 +91,28 @@ def find_libreoffice():
 LIBREOFFICE_BIN = find_libreoffice()
 
 
-def convert_docx_to_pdf_batch(docx_paths, output_dir, timeout=300):
-    """Convert a batch of .docx files to PDF in a single LibreOffice headless
-    call. Cross-platform (Windows/Linux/Mac) as long as LibreOffice is
-    installed. Returns {docx_path: pdf_path} for every file that converted
-    successfully.
-    """
-    if not docx_paths:
-        return {}
+def _profile_dir_uri(path):
+    """Return a file:// URI for the given path, handling Windows drive letters."""
+    # On Windows, path may be like C:\Users\...; we need file:///C:/Users/...
+    path = path.replace("\\", "/")
+    if len(path) >= 2 and path[1] == ":":
+        # Windows absolute path: C:/... -> file:///C:/...
+        return "file:///" + path
+    return "file://" + path
 
+
+def _convert_single_docx_to_pdf(docx_path, output_dir, timeout=120):
+    """Convert one .docx to PDF using LibreOffice.
+
+    Works around two common Windows failures:
+    1. Batch mode (passing all files at once) silently fails when any filename
+       contains non-ASCII characters (accented letters, etc.).
+    2. LibreOffice can't open files whose path contains non-ASCII characters
+       on some Windows builds.
+
+    Strategy: copy the file to a safe ASCII-named temp file, convert that,
+    then rename the output back to match the original stem.
+    """
     if not LIBREOFFICE_BIN:
         raise RuntimeError(
             "LibreOffice not found. Install it so the 'soffice' binary is "
@@ -107,28 +121,149 @@ def convert_docx_to_pdf_batch(docx_paths, output_dir, timeout=300):
             "installer from libreoffice.org (Windows)."
         )
 
-    # Give this conversion its own LibreOffice user profile so concurrent
-    # requests on the server don't collide on a shared profile lock.
-    profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+    original_stem = os.path.splitext(os.path.basename(docx_path))[0]
+
+    # Use a temporary directory with a guaranteed ASCII path for the input copy
+    # so LibreOffice never sees non-ASCII characters in the file path.
+    with tempfile.TemporaryDirectory(prefix="lo_conv_") as safe_dir:
+        safe_input = os.path.join(safe_dir, "input.docx")
+        shutil.copy2(docx_path, safe_input)
+
+        profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
+        try:
+            profile_uri = _profile_dir_uri(profile_dir)
+            cmd = [
+                LIBREOFFICE_BIN,
+                "--headless",
+                "--norestore",
+                f"-env:UserInstallation={profile_uri}",
+                "--convert-to", "pdf",
+                "--outdir", safe_dir,
+                safe_input,
+            ]
+            subprocess.run(
+                cmd, capture_output=True, timeout=timeout, check=True
+            )
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+        # LibreOffice names the output after the input stem ("input.pdf")
+        raw_pdf = os.path.join(safe_dir, "input.pdf")
+        if not os.path.exists(raw_pdf):
+            return None
+
+        # Move to the real output dir with the original name restored
+        final_pdf = os.path.join(output_dir, original_stem + ".pdf")
+        shutil.move(raw_pdf, final_pdf)
+
+    return final_pdf
+
+
+def _convert_single_docx_to_pdf_word(docx_path, output_dir):
+    """Convert one .docx to PDF by driving MS Word directly via COM.
+
+    This bypasses LibreOffice entirely (no soffice binary, no LibreOffice
+    profile/bootstrap.ini involved at all) and only works on Windows with
+    Microsoft Word installed. Each call opens/closes its own Word document;
+    the Word.Application instance is reused across a batch for speed.
+    """
+    import win32com.client  # provided by pywin32, pulled in by docx2pdf
+
+    original_stem = os.path.splitext(os.path.basename(docx_path))[0]
+    final_pdf = os.path.join(output_dir, original_stem + ".pdf")
+
+    word = win32com.client.Dispatch("Word.Application")
+    word.Visible = False
+    wdFormatPDF = 17
     try:
-        cmd = [
-            LIBREOFFICE_BIN,
-            "--headless",
-            "--norestore",
-            f"-env:UserInstallation=file://{profile_dir}",
-            "--convert-to", "pdf",
-            "--outdir", output_dir,
-        ] + docx_paths
-        subprocess.run(cmd, capture_output=True, timeout=timeout, check=True)
+        doc = word.Documents.Open(os.path.abspath(docx_path))
+        try:
+            doc.SaveAs(os.path.abspath(final_pdf), FileFormat=wdFormatPDF)
+        finally:
+            doc.Close(0)
     finally:
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        word.Quit()
+
+    return final_pdf if os.path.exists(final_pdf) else None
+
+
+def convert_docx_to_pdf_batch_word(docx_paths, output_dir):
+    """Convert a list of .docx files to PDF by driving MS Word via COM.
+
+    Reuses a single Word.Application instance for the whole batch instead
+    of launching/quitting Word once per file (much faster, and avoids
+    leaving orphaned WINWORD.EXE processes if something goes wrong).
+    """
+    import win32com.client
+
+    results = {}
+    word = win32com.client.Dispatch("Word.Application")
+    word.Visible = False
+    wdFormatPDF = 17
+    try:
+        for docx_path in docx_paths:
+            try:
+                original_stem = os.path.splitext(os.path.basename(docx_path))[0]
+                final_pdf = os.path.join(output_dir, original_stem + ".pdf")
+                doc = word.Documents.Open(os.path.abspath(docx_path))
+                try:
+                    doc.SaveAs(os.path.abspath(final_pdf), FileFormat=wdFormatPDF)
+                finally:
+                    doc.Close(0)
+                if os.path.exists(final_pdf):
+                    results[docx_path] = final_pdf
+            except Exception as e:
+                print(f"Warning: could not convert {docx_path} via Word: {e}")
+    finally:
+        word.Quit()
+
+    return results
+
+
+def convert_docx_to_pdf_batch(docx_paths, output_dir, timeout=300):
+    """Convert a list of .docx files to PDF.
+
+    On Windows, this drives Microsoft Word directly via COM automation
+    (see convert_docx_to_pdf_batch_word) so LibreOffice is never touched —
+    no soffice binary, no LibreOffice profile, no bootstrap.ini involved.
+    This is the primary path for local Windows use.
+
+    If Word/COM isn't available (e.g. not on Windows, or Word isn't
+    installed), this falls back to LibreOffice headless conversion,
+    converting each file individually so that accented/non-ASCII filenames
+    (e.g. MACHUCA_GUTIÉRREZ_SERGIO_VET.docx) don't cause the whole batch
+    to fail — a known LibreOffice issue on Windows when files are passed
+    all at once and any path contains non-ASCII characters.
+
+    Returns {docx_path: pdf_path} for every file converted successfully.
+    """
+    if not docx_paths:
+        return {}
+
+    if sys.platform == "win32":
+        try:
+            return convert_docx_to_pdf_batch_word(docx_paths, output_dir)
+        except ImportError:
+            print(
+                "Warning: pywin32 not available, falling back to LibreOffice. "
+                "Run: pip install pywin32"
+            )
+        except Exception as e:
+            print(f"Warning: Word COM conversion failed ({e}), falling back to LibreOffice.")
+
+    per_file_timeout = max(60, timeout // max(len(docx_paths), 1))
 
     results = {}
     for docx_path in docx_paths:
-        base = os.path.splitext(os.path.basename(docx_path))[0]
-        pdf_path = os.path.join(output_dir, base + ".pdf")
-        if os.path.exists(pdf_path):
-            results[docx_path] = pdf_path
+        try:
+            pdf_path = _convert_single_docx_to_pdf(
+                docx_path, output_dir, timeout=per_file_timeout
+            )
+            if pdf_path:
+                results[docx_path] = pdf_path
+        except Exception as e:
+            print(f"Warning: could not convert {docx_path}: {e}")
+
     return results
 
 
@@ -1165,9 +1300,9 @@ def generate_certificates():
             error_msg += f" No matching rows found in '{sheet_name_filter}' for the selected certificate type(s)."
             return jsonify({"error": error_msg}), 400
 
-        # Convert every generated DOCX to PDF in ONE LibreOffice batch call —
-        # much faster than converting one file at a time, and it works the
-        # same way on Windows, Linux, and Mac.
+        # Convert every generated DOCX to PDF in one batch — on Windows this
+        # drives MS Word directly via COM (no LibreOffice involved), falling
+        # back to LibreOffice only if Word/COM isn't available.
         if output_format in ['pdf', 'both']:
             try:
                 docx_to_pdf = convert_docx_to_pdf_batch(generated_files, temp_dir)
