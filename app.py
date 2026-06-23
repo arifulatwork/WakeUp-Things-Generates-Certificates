@@ -101,6 +101,36 @@ def _profile_dir_uri(path):
     return "file://" + path
 
 
+def _kill_stale_libreoffice():
+    """Kill any leftover LibreOffice processes before starting a new conversion.
+
+    LibreOffice enforces a single-instance lock. If a previous headless
+    conversion exited uncleanly (or its background process is still winding
+    down), the next subprocess.run() call will silently fail or block because
+    soffice refuses to start a second instance. Killing stragglers first fixes
+    the 'must restart Flask to get a PDF' symptom.
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "soffice.exe", "/T"],
+                capture_output=True, timeout=10
+            )
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "soffice.bin", "/T"],
+                capture_output=True, timeout=10
+            )
+        else:
+            subprocess.run(
+                ["pkill", "-9", "-f", "soffice"],
+                capture_output=True, timeout=10
+            )
+        import time
+        time.sleep(1)   # give the OS a moment to release file locks
+    except Exception:
+        pass            # never let a cleanup error abort the conversion
+
+
 def _convert_single_docx_to_pdf(docx_path, output_dir, timeout=120):
     """Convert one .docx to PDF using LibreOffice.
 
@@ -120,6 +150,11 @@ def _convert_single_docx_to_pdf(docx_path, output_dir, timeout=120):
             "'brew install --cask libreoffice' (Mac), or download the "
             "installer from libreoffice.org (Windows)."
         )
+
+    # Kill any stale LibreOffice instance before starting — without this,
+    # LibreOffice's single-instance lock causes every second conversion to
+    # silently fail until Flask is restarted.
+    _kill_stale_libreoffice()
 
     original_stem = os.path.splitext(os.path.basename(docx_path))[0]
 
